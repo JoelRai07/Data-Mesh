@@ -1,0 +1,7 @@
+# Zugangsdaten / Geheimnisse NIE einchecken
+.env
+
+# Virtuelle Python-Umgebung
+.venv/
+__pycache__/
+*.pyc
