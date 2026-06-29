@@ -1,2 +1,4 @@
 impyla==0.24.0
 python-dotenv==1.2.2
+APScheduler==3.10.4
+pyspark==3.5.1

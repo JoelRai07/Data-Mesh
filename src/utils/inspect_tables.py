@@ -2,7 +2,7 @@
 Schaut sich die vorhandenen project_*-Tabellen an:
 Spalten (Schema) + Zeilenanzahl. Nur Lesen, aendert nichts.
 """
-from db import get_connection
+from ../db import get_connection
 
 TABLES = [
     "project_gemeinden",
