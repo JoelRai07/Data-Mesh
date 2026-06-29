@@ -15,9 +15,11 @@ Ausfuehren:  .venv/Scripts/python.exe src/create_datamodel.py
 """
 from db import get_connection
 
-# Praefix = WI-User (wie in Uebung 5 gefordert). So gehoeren die Tabellen
-# eindeutig zu uns und kollidieren nicht mit denen anderer Gruppen.
-PREFIX = "wi23194_"
+# Unsere Gruppe arbeitet in der Datenbank "gruppe4" (jede Gruppe hat eine eigene).
+DATABASE = "gruppe4"
+
+# Praefix wie vom Team verwendet (z.B. gruppe4_project_bauland_bereinigt).
+PREFIX = "gruppe4_"
 
 DIM_KREIS = PREFIX + "dim_kreis"
 DIM_JAHR = PREFIX + "dim_jahr"
@@ -106,6 +108,10 @@ STATEMENTS = {
 def main():
     conn = get_connection()
     cur = conn.cursor()
+
+    # In die Gruppen-Datenbank wechseln, damit die Tabellen dort angelegt werden.
+    cur.execute(f"USE {DATABASE}")
+    print(f"Datenbank: {DATABASE}\n")
 
     for table_name, statement in STATEMENTS.items():
         print(f"Erstelle Tabelle: {table_name} ...")
