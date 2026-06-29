@@ -208,8 +208,16 @@ FROM (
 fill_fact_bevoelkerung = _build_fill_fact_bevoelkerung()
 
 # fact_bauland entsteht durch PIVOT (lang -> breit): die Quelle hat eine Zeile je
-# Merkmal (Veraeusserungsfaelle / Flaeche / Kaufsumme), wir drehen das in 3 Spalten
-# je Kreis+Jahr per CASE-WHEN-Aggregation (klassisches "konditionales Pivot").
+# Merkmal. Es gibt 4 distinkte Merkmale (live geprueft):
+#   Veraeusserungsfaelle von Bauland, Veraeusserte Baulandflaeche, Kaufsumme,
+#   Durchschnittlicher Kaufwert je qm
+# Wir drehen aktuell nur die ersten 3 in Spalten je Kreis+Jahr per CASE-WHEN-
+# Aggregation (klassisches "konditionales Pivot") und berechnen preis_pro_qm_eur
+# selbst aus Kaufsumme/Flaeche.
+# TODO: das 4. (amtliche) Merkmal "Durchschnittlicher Kaufwert je qm" wird
+# bisher NICHT uebernommen, obwohl es preis_pro_qm_eur eigentlich schon
+# vorberechnet liefert - pruefen, ob es preis_pro_qm_eur ersetzen oder als
+# eigene Spalte ergaenzt werden soll (siehe docs/datenmodell_begruendung.md).
 #
 # DATENQUALITAET: die merkmal-Werte sind durch einen Encoding-Fehler beschaedigt
 # (z.B. 'Ver?u?erungsfälle von Bauland' statt 'Veräußerungsfälle von Bauland' -
