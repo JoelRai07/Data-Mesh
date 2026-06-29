@@ -111,7 +111,9 @@ STORED AS PARQUET
 """
 
 # fact_bauland: Baulandverkaeufe je Kreis und Jahr.
-# Entsteht durch PIVOT der Quelltabelle (4 Merkmale -> 4 Kennzahl-Spalten).
+# Entsteht durch PIVOT der Quelltabelle (3 von 4 Merkmalen -> 3 Kennzahl-Spalten;
+# das 4. Merkmal "Durchschnittlicher Kaufwert je qm" wird aktuell NICHT
+# uebernommen, siehe TODO in pipeline.py).
 create_fact_bauland = f"""
 CREATE TABLE IF NOT EXISTS {FACT_BAULAND} (
     kreis_id                       STRING COMMENT 'FK -> dim_kreis.kreis_id',

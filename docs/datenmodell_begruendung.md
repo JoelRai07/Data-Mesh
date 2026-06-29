@@ -17,14 +17,17 @@ Vier Quell-Tabellen (Rohdaten) stehen auf Impala bereit:
 
 **Zentrale Erkenntnis 1:** `bevoelkerung.id` und `bauland.kreis_id` sind derselbe
 **amtliche Regionalschlüssel** (z. B. `01001` = Flensburg). Sie matchen exakt
-(539 Kreise) und sind hierarchisch: die ersten 2 Stellen kodieren das Bundesland
+(472 Kreise mit 5-stelligem Schlüssel, live gegen beide Quelltabellen geprüft)
+und sind hierarchisch: die ersten 2 Stellen kodieren das Bundesland
 (`01` = Schleswig-Holstein). → Das ist unser natürlicher Integrationsschlüssel auf
 Kreis-Ebene.
 
 **Zentrale Erkenntnis 2:** `project_gemeinden` und `project_klimadaten` haben
 beide `latitude`/`longitude`. Damit lässt sich die sonst fehlende Verknüpfung
 zwischen Gemeinde-Ebene und Klimastadt-Ebene über **räumliche Nähe** (nächste
-Stadt, Haversine-Distanz) statt über unsicheres Namens-Matching herstellen.
+Stadt anhand einfacher euklidischer Distanz auf lat/long, bewusst ohne
+Haversine-Trigonometrie — für die geografische Ausdehnung Deutschlands
+ausreichend genau) statt über unsicheres Namens-Matching herstellen.
 `project_gemeinden` wird damit zur **Brücken-Dimension** (`dim_gemeinde`),
 die Kreis-Ebene (Bevölkerung/Bauland) und Stadt-Ebene (Klima) verbindet — alle
 vier Quellen sind so in einem Modell nutzbar, nicht nur isoliert nebeneinander.
@@ -72,9 +75,13 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
    eine echte Dimension und Zeitreihen-Analysen sind trivial.
 
 5. **Pivot der Baulanddaten (lang → breit).**
-   Die Quelle hat eine Zeile je Merkmal (Veräußerungsfälle, Fläche, Kaufsumme …).
-   Wir drehen die 4 Merkmale in 4 Kennzahl-Spalten → genau **eine** Faktenzeile je
-   Kreis+Jahr, direkt vergleichbar.
+   Die Quelle hat eine Zeile je Merkmal. Live geprüft gibt es **4** distinkte
+   Merkmale: `Veräußerungsfälle von Bauland`, `Veräußerte Baulandfläche`,
+   `Kaufsumme` und `Durchschnittlicher Kaufwert je qm`. Aktuell pivotiert die
+   Pipeline nur die ersten 3 in Spalten und berechnet `preis_pro_qm_eur` selbst
+   aus Kaufsumme/Fläche, statt den 4. (amtlichen) Wert direkt zu übernehmen —
+   **bekannte Lücke, noch zu schließen** (s. README/offene Punkte). Ziel bleibt
+   genau **eine** Faktenzeile je Kreis+Jahr, direkt vergleichbar.
 
 6. **KPI-Spalten direkt in den Basisfakten.**
    Wo eine Kennzahl aus Spalten **derselben** Zeile berechenbar ist (z. B.
