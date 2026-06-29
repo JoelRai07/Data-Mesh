@@ -1,13 +1,19 @@
 """
 DELIVERABLE 1: DDLs zur Erstellung des Datenmodells (Star-Schema)
 
-Erstellt das Datenprodukt-Datenmodell auf Impala:
-  - 2 Dimensionstabellen:  dim_kreis, dim_jahr
-  - 2 Faktentabellen:      fact_bevoelkerung, fact_bauland
-  - 1 optionale Faktentabelle: fact_klima
+Erstellt das Datenprodukt-Datenmodell auf Impala fuer den Use Case
+"Standortprofil-Dashboard":
+  - 4 Dimensionstabellen:  dim_kreis, dim_jahr, dim_gemeinde, dim_klimastadt
+  - 5 Faktentabellen:      fact_bevoelkerung, fact_bauland, fact_klima,
+                            fact_gemeinde_stamm, fact_standortprofil_kpi
 
 Eigenschaften (s. Begruendung in docs/datenmodell_begruendung.md):
   - Star-Schema (denormalisiert) -> wenige Joins, gut fuer OLAP/Analytik
+  - dim_gemeinde ist die Bruecke zwischen Kreis-Ebene (Bevoelkerung/Bauland)
+    und Stadt-Ebene (Klima): Kreis-Zuordnung per Namens-Match, Klimastadt-
+    Zuordnung per raeumlicher Naehe (latitude/longitude)
+  - fact_standortprofil_kpi ist eine aggregierte Cross-Table-Faktentabelle,
+    die Bevoelkerung + Bauland + Klima + Gemeinde-Stammdaten zu KPIs verdichtet
   - STORED AS PARQUET -> spaltenorientiert, ideal fuer analytische Abfragen
   - CREATE TABLE IF NOT EXISTS -> idempotent (mehrfach ausfuehrbar)
 
@@ -23,9 +29,14 @@ PREFIX = "gruppe3_"
 
 DIM_KREIS = PREFIX + "dim_kreis"
 DIM_JAHR = PREFIX + "dim_jahr"
+DIM_GEMEINDE = PREFIX + "dim_gemeinde"
+DIM_KLIMASTADT = PREFIX + "dim_klimastadt"
+
 FACT_BEVOELKERUNG = PREFIX + "fact_bevoelkerung"
 FACT_BAULAND = PREFIX + "fact_bauland"
 FACT_KLIMA = PREFIX + "fact_klima"
+FACT_GEMEINDE_STAMM = PREFIX + "fact_gemeinde_stamm"
+FACT_STANDORTPROFIL_KPI = PREFIX + "fact_standortprofil_kpi"
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +64,32 @@ CREATE TABLE IF NOT EXISTS {DIM_JAHR} (
 STORED AS PARQUET
 """
 
+# dim_gemeinde: Bruecken-Dimension zwischen Kreis-Ebene und Klimastadt-Ebene.
+# kreis_id wird per Namens-Match (district_kreis -> dim_kreis.kreis_name) aufgeloest.
+# latitude/longitude dienen als Matching-Schluessel zu dim_klimastadt (naechste Stadt).
+create_dim_gemeinde = f"""
+CREATE TABLE IF NOT EXISTS {DIM_GEMEINDE} (
+    gemeinde_id      STRING COMMENT 'Surrogat-Schluessel (PK), da Quelle keinen Schluessel hat',
+    gemeinde_name    STRING COMMENT 'Name der Gemeinde',
+    kreis_id         STRING COMMENT 'FK -> dim_kreis.kreis_id, aufgeloest per Namens-Match',
+    bundesland_name  STRING COMMENT 'Name des Bundeslandes',
+    postal_code      STRING COMMENT 'Postleitzahl',
+    latitude         DOUBLE COMMENT 'Breitengrad, fuer Naeherungs-Match zu dim_klimastadt',
+    longitude        DOUBLE COMMENT 'Laengengrad, fuer Naeherungs-Match zu dim_klimastadt'
+)
+STORED AS PARQUET
+"""
+
+# dim_klimastadt: deutsche Staedte aus den Klimadaten (distinct city/lat/long).
+create_dim_klimastadt = f"""
+CREATE TABLE IF NOT EXISTS {DIM_KLIMASTADT} (
+    stadt_name  STRING COMMENT 'Stadtname (PK), gefiltert auf country = Germany',
+    latitude    DOUBLE COMMENT 'Breitengrad',
+    longitude   DOUBLE COMMENT 'Laengengrad'
+)
+STORED AS PARQUET
+"""
+
 
 # ---------------------------------------------------------------------------
 # FAKTENTABELLEN (quantitative Daten: die Kennzahlen / Messwerte)
@@ -64,9 +101,11 @@ create_fact_bevoelkerung = f"""
 CREATE TABLE IF NOT EXISTS {FACT_BEVOELKERUNG} (
     kreis_id              STRING COMMENT 'FK -> dim_kreis.kreis_id',
     jahr                  INT    COMMENT 'FK -> dim_jahr.jahr',
-    einwohner_insgesamt   BIGINT COMMENT 'Einwohner gesamt',
-    einwohner_maennlich   BIGINT COMMENT 'Einwohner maennlich',
-    einwohner_weiblich    BIGINT COMMENT 'Einwohner weiblich'
+    einwohner_insgesamt    BIGINT COMMENT 'Einwohner gesamt',
+    einwohner_maennlich    BIGINT COMMENT 'Einwohner maennlich',
+    einwohner_weiblich     BIGINT COMMENT 'Einwohner weiblich',
+    geschlechterquotient  DOUBLE COMMENT 'KPI: einwohner_maennlich / einwohner_weiblich',
+    wachstum_vorjahr_pct  DOUBLE COMMENT 'KPI: prozentuale Veraenderung ggue. Vorjahr'
 )
 STORED AS PARQUET
 """
@@ -79,18 +118,53 @@ CREATE TABLE IF NOT EXISTS {FACT_BAULAND} (
     jahr                           INT    COMMENT 'FK -> dim_jahr.jahr',
     anzahl_veraeusserungsfaelle    BIGINT COMMENT 'Anzahl Veraeusserungsfaelle von Bauland',
     veraeusserte_flaeche_1000qm    BIGINT COMMENT 'Veraeusserte Baulandflaeche in 1000 qm',
-    kaufsumme_tsd_eur              BIGINT COMMENT 'Kaufsumme in Tsd. EUR'
+    kaufsumme_tsd_eur              BIGINT COMMENT 'Kaufsumme in Tsd. EUR',
+    preis_pro_qm_eur               DOUBLE COMMENT 'KPI: kaufsumme_tsd_eur / veraeusserte_flaeche_1000qm',
+    anteil_baureif_pct             DOUBLE COMMENT 'KPI: Anteil baureifes Land an Gesamtflaeche',
+    durchschnittsfall_qm           DOUBLE COMMENT 'KPI: mittlere Grundstuecksgroesse je Veraeusserungsfall'
 )
 STORED AS PARQUET
 """
 
-# fact_klima (optional): Durchschnittstemperatur je deutsche Stadt und Jahr.
-# Hinweis: Klima hat KEINEN Regionalschluessel -> nur lose ueber Stadtname anbindbar.
+# fact_klima: Durchschnittstemperatur je deutsche Klimastadt und Jahr.
+# FK auf dim_klimastadt statt freiem String (s. Begruendung).
 create_fact_klima = f"""
 CREATE TABLE IF NOT EXISTS {FACT_KLIMA} (
-    stadt              STRING COMMENT 'Stadtname (kein Regionalschluessel vorhanden)',
-    jahr               INT    COMMENT 'FK -> dim_jahr.jahr',
-    avg_temperatur     DOUBLE COMMENT 'Durchschnittstemperatur in Grad Celsius'
+    stadt_name                 STRING COMMENT 'FK -> dim_klimastadt.stadt_name',
+    jahr                       INT    COMMENT 'FK -> dim_jahr.jahr',
+    avg_temperatur             DOUBLE COMMENT 'Durchschnittstemperatur in Grad Celsius (Jahresmittel)',
+    temperatur_abweichung_grad DOUBLE COMMENT 'KPI: Abweichung vom langjaehrigen Referenzmittel (Klimawandel-Indikator)'
+)
+STORED AS PARQUET
+"""
+
+# fact_gemeinde_stamm: Gemeinde-Stammdaten als Snapshot (Quelle hat keine Zeitreihe, daher kein jahr).
+create_fact_gemeinde_stamm = f"""
+CREATE TABLE IF NOT EXISTS {FACT_GEMEINDE_STAMM} (
+    gemeinde_id          STRING COMMENT 'FK -> dim_gemeinde.gemeinde_id',
+    einwohner_total       BIGINT COMMENT 'Einwohner gesamt (Snapshot)',
+    einwohner_maennlich   BIGINT COMMENT 'Einwohner maennlich (Snapshot)',
+    einwohner_weiblich    BIGINT COMMENT 'Einwohner weiblich (Snapshot)',
+    anteil_weiblich_pct  DOUBLE COMMENT 'KPI: einwohner_weiblich / einwohner_total * 100',
+    area_km2             DOUBLE COMMENT 'Flaeche der Gemeinde in km2',
+    einwohner_pro_km2    DOUBLE COMMENT 'KPI: Bevoelkerungsdichte'
+)
+STORED AS PARQUET
+"""
+
+# fact_standortprofil_kpi: aggregierte Cross-Table-Faktentabelle fuer das Dashboard.
+# Verdichtet fact_bevoelkerung + fact_bauland + fact_klima (ueber dim_gemeinde) +
+# fact_gemeinde_stamm zu Kreis x Jahr-Kennzahlen.
+create_fact_standortprofil_kpi = f"""
+CREATE TABLE IF NOT EXISTS {FACT_STANDORTPROFIL_KPI} (
+    kreis_id                          STRING COMMENT 'FK -> dim_kreis.kreis_id',
+    jahr                              INT    COMMENT 'FK -> dim_jahr.jahr',
+    wohnraumdruck_index               DOUBLE COMMENT 'bevoelkerungswachstum_pct / bauland_angebotswachstum_pct (fact_bevoelkerung x fact_bauland)',
+    baulandpreis_pro_kopf_eur         DOUBLE COMMENT 'kaufsumme_tsd_eur*1000 / einwohner_insgesamt (fact_bauland x fact_bevoelkerung)',
+    freiflaeche_pro_einwohner_qm      DOUBLE COMMENT 'veraeusserte_flaeche_1000qm*1000 / einwohner_insgesamt (fact_bauland x fact_bevoelkerung)',
+    klima_angepasstes_wohnraumrisiko  DOUBLE COMMENT 'wohnraumdruck_index * (1 + temperatur_abweichung_grad/10) (fact_bevoelkerung x fact_bauland x fact_klima via dim_gemeinde)',
+    verstaedterung_index              DOUBLE COMMENT 'Gemeinde-Dichte vs. Kreis-Durchschnittsdichte (fact_gemeinde_stamm x fact_bevoelkerung via dim_gemeinde)',
+    standortattraktivitaets_score     DOUBLE COMMENT 'z-standardisierter Score aus Bevoelkerung + Bauland + Klima (alle Basisfakten)'
 )
 STORED AS PARQUET
 """
@@ -99,9 +173,13 @@ STORED AS PARQUET
 STATEMENTS = {
     DIM_KREIS: create_dim_kreis,
     DIM_JAHR: create_dim_jahr,
+    DIM_GEMEINDE: create_dim_gemeinde,
+    DIM_KLIMASTADT: create_dim_klimastadt,
     FACT_BEVOELKERUNG: create_fact_bevoelkerung,
     FACT_BAULAND: create_fact_bauland,
     FACT_KLIMA: create_fact_klima,
+    FACT_GEMEINDE_STAMM: create_fact_gemeinde_stamm,
+    FACT_STANDORTPROFIL_KPI: create_fact_standortprofil_kpi,
 }
 
 
