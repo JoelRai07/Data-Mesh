@@ -85,7 +85,32 @@ for row in cur.fetchall():
 - [x] Umgebung & Impala-Verbindung eingerichtet
 - [x] **Datenmodell (DDLs)** für das Datenprodukt + Begründung
       → [src/create_datamodel.py](src/create_datamodel.py), [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md)
-- [ ] **Pipeline** zur Befüllung (idempotent) inkl. **Scheduler**
+- [x] **Pipeline** zur Befüllung (idempotent) inkl. **Scheduler**
+      → [src/pipeline.py](src/pipeline.py) (Impala-SQL-Variante),
+      [src/pipeline_spark.py](src/pipeline_spark.py) (Apache-Spark-Variante, vom Scheduler verwendet),
+      [src/scheduler.py](src/scheduler.py), [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)
 - [ ] **Data Contract**
 - [ ] README für die Abgabe finalisieren
-```
+
+## Bekannte offene Punkte (noch zu beheben)
+
+- **`WindowExec`-Warnung in `pipeline_spark.py`:**
+  ```
+  WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+  ```
+  Tritt bei den Window-Funktionen auf, die ohne (oder mit zu grob granularem)
+  `PARTITION BY` arbeiten (z.B. das Surrogat-`gemeinde_id` in
+  `build_dim_gemeinde` per `Window.orderBy(...)` ohne Partition, sowie Teile
+  des z-Score in `build_fact_standortprofil_kpi`). Funktioniert aktuell
+  korrekt, ist bei unseren Datengrößen (~10-15k Zeilen) noch akzeptabel, sollte
+  aber behoben werden (z.B. echte Partitionierung einführen oder
+  `monotonically_increasing_id()` statt global sortiertem `row_number()` für
+  die Surrogatschlüssel verwenden), bevor die Pipeline auf größere
+  Datenmengen skaliert.
+- **log4j-`ClassCastException` beim JDBC-Connect:** kosmetisches Rauschen aus
+  dem `ImpalaJDBC42.jar`-Treiber (geshadetes log4j kollidiert mit Sparks
+  log4j), aktuell harmlos und ohne Funktionseinbußen, s. Erklärung in
+  [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md). Sollte für eine
+  saubere Abgabe trotzdem unterdrückt/behoben werden (z.B. per
+  Log4j-Konfiguration, die die Lookups deaktiviert, oder durch Entfernen der
+  geshadeten log4j-Klassen aus dem Treiber-Jar).
