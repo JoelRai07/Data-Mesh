@@ -1,9 +1,9 @@
-# Data Mesh & Data Engineering – Portfolioprüfung
+# Data Mesh & Data Engineering – Portfolioprüfung (Gruppe 3)
 
 Datenprodukt auf Basis von vier öffentlichen Datensätzen zu deutschen Gemeinden
 (Gemeinden, Baulandverkäufe, Klimadaten, Bevölkerungszahlen). Die Daten liegen in
-einer **Cloudera CDP / Impala**-Datenbank der DHBW Stuttgart (Datenbank `gruppe3`);
-der Code hier greift per Python (`impyla`) darauf zu.
+einer **Cloudera CDP / Impala**-Datenbank der DHBW Stuttgart (Datenbank `gruppe3`).
+Das Datenmodell wird aus den Rohdaten per **Apache Spark** (PySpark) befüllt.
 
 Use Case, Datenmodell und die Begründung dafür stehen in
 [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md).
@@ -19,11 +19,14 @@ Data-Mesh/
 ├── .gitignore
 │
 ├── src/                              # Unser Code
-│   ├── db.py                        # Zentraler Verbindungs-Helfer (get_connection)
-│   ├── test_connection.py           # Prüft die Verbindung zu Impala
-│   ├── inspect_tables.py            # Zeigt Aufbau + Zeilenzahl der project_*-Quelltabellen
-│   ├── create_datamodel.py          # DELIVERABLE 1: DDLs für das Star-Schema (Dimensionen + Fakten)
-│   └── pipeline.py                  # DELIVERABLE 2: Befüllt das Datenmodell aus den Rohdaten
+│   ├── db.py                        # Zentraler Verbindungs-Helfer (get_connection, impyla)
+│   ├── create_datamodel.py          # DELIVERABLE 1: DDLs für das Star-Schema (4 Dim. + 5 Fakten)
+│   ├── pipeline_spark.py            # DELIVERABLE 2: Befüllt das Datenmodell aus den Rohdaten (PySpark)
+│   ├── scheduler.py                 # DELIVERABLE 2b: führt die Pipeline täglich um 00:00 aus (APScheduler)
+│   └── utils/                       # Hilfsskripte (nicht Teil der Abgabe-Logik)
+│       ├── test_connection.py       # Prüft die Verbindung zu Impala
+│       ├── inspect_tables.py        # Zeigt Aufbau + Zeilenzahl von Tabellen
+│       └── ImpalaJDBC42.jar         # JDBC-Treiber für Spark (NICHT eingecheckt, lokal vorhanden)
 │
 ├── data/                             # Beispiel-Rohdaten als CSV (lokal, zur Inspektion)
 │   └── bevoelkerungzahlen.csv
@@ -32,14 +35,13 @@ Data-Mesh/
 │   ├── create_nifi_tables.py
 │   └── impala_snippet.py
 │
-├── docs/                             # Aufgabenstellung, Kursmaterial & Modell-Begründung
-│   ├── Portfolioprüfung.pdf          # Aufgabenstellung
-│   ├── datenmodell_begruendung.md    # DELIVERABLE 1b: Begründung des Datenmodells
-│   ├── Tabellenbeispiel.md           # Schema + Beispielzeilen der vier Rohdaten-Tabellen
-│   └── coursematerial/               # Foliensätze + Übungsmaterial aus der Vorlesung
-│
-└── lib/                              # JDBC-Treiber (für Java/Tools, nicht eingecheckt)
-    └── ImpalaJDBC42.jar
+└── docs/                             # Aufgabenstellung, Kursmaterial & Doku
+    ├── Portfolioprüfung.pdf          # Aufgabenstellung
+    ├── datenmodell_begruendung.md    # DELIVERABLE 1b: Begründung des Datenmodells
+    ├── Tabellenbeispiel.md           # Schema + Beispielzeilen der vier Rohdaten-Tabellen
+    ├── spark_stolpersteine.md        # Gesammelte Spark-/JDBC-Stolpersteine + Lösungen
+    ├── scheduler_bug.md              # Analyse eines APScheduler-Bugs (next_run_time)
+    └── coursematerial/               # Foliensätze + Übungsmaterial aus der Vorlesung
 ```
 
 ## Einrichtung (einmalig)
@@ -48,34 +50,40 @@ Data-Mesh/
 # 1. Virtuelle Umgebung anlegen
 python -m venv .venv
 
-# 2. Abhängigkeiten installieren
+# 2. Abhängigkeiten installieren (impyla, python-dotenv, APScheduler, pyspark)
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# 3. Zugangsdaten eintragen
-#    .env.example nach .env kopieren und Werte ausfüllen
+# 3. Zugangsdaten eintragen: .env.example nach .env kopieren und ausfüllen
 #    (Workload-Username & Workload-Passwort aus dem Cloudera-Portal)
 ```
+
+**Zusätzlich nur für Spark (`pipeline_spark.py` / `scheduler.py`):**
+- **JDK 17** installiert; Pfad in `.env` als `JAVA_HOME_JDK17` eintragen (siehe `.env.example`).
+- Den JDBC-Treiber **`ImpalaJDBC42.jar`** unter `src/utils/` ablegen (ist per `.gitignore`
+  ausgeschlossen, muss also lokal besorgt werden).
 
 ## Benutzung
 
 ```bash
 # Verbindung testen
-.venv/Scripts/python.exe src/test_connection.py
+.venv/Scripts/python.exe src/utils/test_connection.py
 
-# Vorhandene project_*-Quelltabellen ansehen (Schema + Zeilenzahl)
-.venv/Scripts/python.exe src/inspect_tables.py
+# Quelltabellen ansehen (Schema + Zeilenzahl)
+.venv/Scripts/python.exe src/utils/inspect_tables.py
 
-# 1. Datenmodell (Dimensionen + Fakten) anlegen - idempotent, mehrfach ausführbar
+# 1. Datenmodell (Dimensionen + Fakten) anlegen - idempotent (CREATE TABLE IF NOT EXISTS)
 .venv/Scripts/python.exe src/create_datamodel.py
 
-# 2. Datenmodell befüllen - idempotent (INSERT OVERWRITE), muss nach 1. laufen
-.venv/Scripts/python.exe src/pipeline.py
+# 2. Datenmodell befüllen mit Spark - idempotent (TRUNCATE + INSERT), muss nach 1. laufen
+.venv/Scripts/python.exe src/pipeline_spark.py
+
+# 3. (optional) Pipeline täglich um 00:00 automatisch ausführen - läuft dauerhaft
+.venv/Scripts/python.exe src/scheduler.py
 ```
 
-`pipeline.py` füllt die Tabellen in fester Reihenfolge entlang der Abhängigkeiten
-im Star-Schema (Dimensionen zuerst, dann Basis-Fakten, zuletzt die aggregierte
-KPI-Faktentabelle `gruppe3_fact_standortprofil_kpi`) — Details dazu stehen im
-Modul-Docstring von `pipeline.py`.
+`pipeline_spark.py` füllt die Tabellen in fester Reihenfolge entlang der Abhängigkeiten
+im Star-Schema: zuerst die Dimensionen, dann die Basis-Fakten, zuletzt die aggregierte
+KPI-Faktentabelle `gruppe3_fact_standortprofil_kpi`.
 
 Eigene Skripte importieren die Verbindung zentral:
 
@@ -84,54 +92,59 @@ from db import get_connection      # funktioniert, wenn das Skript in src/ liegt
 
 conn = get_connection()
 cur = conn.cursor()
+cur.execute("USE gruppe3")
 cur.execute("SELECT * FROM gruppe3_dim_kreis LIMIT 10")
 for row in cur.fetchall():
     print(row)
 ```
 
-## Quell-Tabellen auf Impala (Rohdaten, bereits befüllt, Datenbank `gruppe3`)
+## Datenbank `gruppe3` auf Impala
 
-| Tabelle                          | Zeilen     | Inhalt                                            |
-|-----------------------------------|-----------:|---------------------------------------------------|
-| `gruppe3_project_gemeinden`       |     10.950 | Gemeinden: Land, Kreis, Name, Fläche, Einwohner   |
-| `gruppe3_project_bauland`         |     21.600 | Baulandverkäufe je Jahr/Kreis (4 Merkmale)        |
-| `gruppe3_project_klimadaten`      |  8.599.212 | Temperaturen je Stadt/Datum (weltweit)            |
-| `gruppe3_project_bevoelkerungzahlen` |       581 | Einwohner je Kreis (breit: 1 Spalte je Jahr 1995-2024) |
+**Quell-Tabellen (Rohdaten):**
 
-Das daraus abgeleitete Star-Schema (4 Dimensionen, 5 Fakten) ist in
-[docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md) beschrieben.
+| Tabelle | Inhalt |
+|---|---|
+| `gruppe3_project_gemeinden` | Gemeinden: Land, Kreis, Name, Fläche, Einwohner, Koordinaten |
+| `gruppe3_project_bauland` | Baulandverkäufe je Jahr/Kreis (4 Merkmale, Langformat) |
+| `gruppe3_project_klimadaten` | Temperaturen je Stadt/Datum (weltweit, ~8,6 Mio. Zeilen) |
+| `gruppe3_project_bevoelkerungzahlen` | Einwohner je Kreis (Breitformat: 1 Spalte je Jahr) |
+
+**Datenprodukt (Star-Schema, 4 Dimensionen + 5 Fakten):**
+
+| Dimensionen | Fakten |
+|---|---|
+| `gruppe3_dim_kreis` | `gruppe3_fact_bevoelkerung` |
+| `gruppe3_dim_jahr` | `gruppe3_fact_bauland` |
+| `gruppe3_dim_gemeinde` (Brücke Kreis ↔ Stadt) | `gruppe3_fact_klima` |
+| `gruppe3_dim_klimastadt` | `gruppe3_fact_gemeinde_stamm` |
+|  | `gruppe3_fact_standortprofil_kpi` (aggregierte Cross-Table-KPIs) |
+
+Details + Begründung: [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md).
 
 ## Stand / To-do für die Abgabe
 
 - [x] Umgebung & Impala-Verbindung eingerichtet
-- [x] **Datenmodell (DDLs)** für das Datenprodukt + Begründung
+- [x] **Datenmodell (DDLs)** + Begründung
       → [src/create_datamodel.py](src/create_datamodel.py), [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md)
-- [x] **Pipeline** zur Befüllung (idempotent) inkl. **Scheduler**
-      → [src/pipeline.py](src/pipeline.py) (Impala-SQL-Variante),
-      [src/pipeline_spark.py](src/pipeline_spark.py) (Apache-Spark-Variante, vom Scheduler verwendet),
-      [src/scheduler.py](src/scheduler.py), [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)
-- [ ] **Data Contract**
-- [ ] README für die Abgabe finalisieren
+- [x] **Pipeline** zur Befüllung (Spark, idempotent) inkl. **Scheduler**
+      → [src/pipeline_spark.py](src/pipeline_spark.py), [src/scheduler.py](src/scheduler.py)
+- [ ] **Data Contract** (Theorie/Umsetzung folgt aus dem Unterricht am Do.)
+- [ ] README & Abgabe finalisieren (siehe offene Punkte unten)
 
-## Bekannte offene Punkte (noch zu beheben)
+## Bekannte offene Punkte (vor der Abgabe)
 
-- **`WindowExec`-Warnung in `pipeline_spark.py`:**
-  ```
-  WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
-  ```
-  Tritt bei den Window-Funktionen auf, die ohne (oder mit zu grob granularem)
-  `PARTITION BY` arbeiten (z.B. das Surrogat-`gemeinde_id` in
-  `build_dim_gemeinde` per `Window.orderBy(...)` ohne Partition, sowie Teile
-  des z-Score in `build_fact_standortprofil_kpi`). Funktioniert aktuell
-  korrekt, ist bei unseren Datengrößen (~10-15k Zeilen) noch akzeptabel, sollte
-  aber behoben werden (z.B. echte Partitionierung einführen oder
-  `monotonically_increasing_id()` statt global sortiertem `row_number()` für
-  die Surrogatschlüssel verwenden), bevor die Pipeline auf größere
-  Datenmengen skaliert.
-- **log4j-`ClassCastException` beim JDBC-Connect:** kosmetisches Rauschen aus
-  dem `ImpalaJDBC42.jar`-Treiber (geshadetes log4j kollidiert mit Sparks
-  log4j), aktuell harmlos und ohne Funktionseinbußen, s. Erklärung in
-  [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md). Sollte für eine
-  saubere Abgabe trotzdem unterdrückt/behoben werden (z.B. per
-  Log4j-Konfiguration, die die Lookups deaktiviert, oder durch Entfernen der
-  geshadeten log4j-Klassen aus dem Treiber-Jar).
+- **Scheduler steht im Testmodus** (`CronTrigger(minute="*")`, läuft jede Minute) →
+  vor der Abgabe in [src/scheduler.py](src/scheduler.py) zurück auf
+  `CronTrigger(hour=0, minute=0)` (täglich 00:00, wie gefordert) stellen.
+- **`WindowExec`-Warnung in `pipeline_spark.py`** (Window-Funktionen ohne `PARTITION BY`,
+  z.B. Surrogat-`gemeinde_id`). Bei unseren Datengrößen (~10–15k Zeilen) unkritisch,
+  sollte für saubere Skalierung aber behoben werden.
+- **log4j-`ClassCastException` beim JDBC-Connect**: kosmetisches Rauschen aus dem
+  `ImpalaJDBC42.jar` (geshadetes log4j kollidiert mit Sparks log4j), harmlos —
+  s. [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md).
+- Einzelne KPIs in `fact_standortprofil_kpi` (z.B. `wohnraumdruck_index` als Quotient
+  zweier Wachstumsraten) können bei kleinen Nennern extreme Werte annehmen — fachliche
+  Plausibilität vor der Präsentation prüfen.
+- Datenqualität: kaputte Umlaute (`L�beck`) und führende Leerzeichen in `kreis_name`
+  stammen aus den Rohdaten und sind noch nicht bereinigt → im Data Contract dokumentieren.
+```

@@ -1,4 +1,11 @@
-from ../db import get_connection
+import os
+import sys
+
+# db.py liegt eine Ebene hoeher (in src/). Diesen Ordner zum Suchpfad
+# hinzufuegen, damit "from db import ..." auch aus src/utils/ funktioniert.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from db import get_connection
 
 def main():
     print("Verbinde mit Impala ...")
