@@ -1,8 +1,9 @@
 """
 DELIVERABLE 2: Pipeline - befuellt das Datenmodell.
 
-Liest aus den bereinigten Quelltabellen (gruppe4_project_*_bereinigt) und
-schreibt in das Star-Schema (gruppe4_dim_*, gruppe4_fact_*).
+Liest aus den bereitgestellten Rohdaten (default.project_*) und schreibt in
+unser Star-Schema in der Gruppen-Datenbank gruppe3 (gruppe3_dim_*, gruppe3_fact_*).
+Die Bereinigung (Aggregat-Zeilen rausfiltern usw.) passiert direkt im SELECT.
 
 Idempotent durch INSERT OVERWRITE: jeder Lauf ersetzt den Inhalt komplett,
 es entstehen also keine Duplikate.
@@ -17,28 +18,29 @@ from db import get_connection
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-DATABASE = "gruppe4"
+DATABASE = "gruppe3"
 
 
 # ---------------------------------------------------------------------------
 # DIMENSIONEN
 # ---------------------------------------------------------------------------
 
-# dim_jahr: distinkte Jahre (2015-2024) aus den Bauland-Daten.
+# dim_jahr: distinkte Jahre (2015-2024) aus den Bauland-Rohdaten.
 fill_dim_jahr = """
-INSERT OVERWRITE gruppe4_dim_jahr
+INSERT OVERWRITE gruppe3_dim_jahr
 SELECT DISTINCT
     CAST(jahr AS INT)                  AS jahr,
     CAST(FLOOR(jahr / 10) * 10 AS INT) AS jahrzehnt
-FROM gruppe4_project_bauland_bereinigt
+FROM default.project_bauland
 WHERE jahr IS NOT NULL
 """
 
-# dim_kreis: ein Eintrag je Kreis (aus den Bevoelkerungsdaten).
+# dim_kreis: ein Eintrag je Kreis (aus den Bevoelkerungs-Rohdaten).
+# Bereinigung: nur echte Kreise (5-stelliger Schluessel), keine Aggregat-Zeilen
+#   wie 'DG' (Deutschland) oder '01' (Bundesland).
 # bundesland_id = die ersten 2 Stellen des Regionalschluessels (z.B. 01001 -> 01).
-# bundesland_name per CASE (die 16 amtlichen Schluessel).
 fill_dim_kreis = """
-INSERT OVERWRITE gruppe4_dim_kreis
+INSERT OVERWRITE gruppe3_dim_kreis
 SELECT
     id                AS kreis_id,
     kreis             AS kreis_name,
@@ -62,7 +64,8 @@ SELECT
         WHEN '16' THEN 'Thueringen'
         ELSE 'Unbekannt'
     END               AS bundesland_name
-FROM gruppe4_project_bevoelkerungzahlen_bereinigt
+FROM default.project_bevoelkerungzahlen
+WHERE LENGTH(id) = 5
 """
 
 
@@ -71,23 +74,23 @@ def main():
     cur = conn.cursor()
     cur.execute(f"USE {DATABASE}")
 
-    print("Fuelle gruppe4_dim_jahr ...")
+    print("Fuelle gruppe3_dim_jahr ...")
     cur.execute(fill_dim_jahr)
     print("  -> OK")
 
-    print("Fuelle gruppe4_dim_kreis ...")
+    print("Fuelle gruppe3_dim_kreis ...")
     cur.execute(fill_dim_kreis)
     print("  -> OK")
 
     # --- Kontrolle: zeigen, was drinsteht ---
-    cur.execute("SELECT jahr, jahrzehnt FROM gruppe4_dim_jahr ORDER BY jahr")
+    cur.execute("SELECT jahr, jahrzehnt FROM gruppe3_dim_jahr ORDER BY jahr")
     print("\ndim_jahr:")
     for row in cur.fetchall():
         print("  ", row)
 
-    cur.execute("SELECT COUNT(*) FROM gruppe4_dim_kreis")
+    cur.execute("SELECT COUNT(*) FROM gruppe3_dim_kreis")
     print(f"\ndim_kreis: {cur.fetchone()[0]} Kreise. Beispiele:")
-    cur.execute("SELECT kreis_id, kreis_name, bundesland_name FROM gruppe4_dim_kreis ORDER BY kreis_id LIMIT 5")
+    cur.execute("SELECT kreis_id, kreis_name, bundesland_name FROM gruppe3_dim_kreis ORDER BY kreis_id LIMIT 5")
     for row in cur.fetchall():
         print("  ", row)
 

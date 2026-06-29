@@ -15,11 +15,11 @@ Ausfuehren:  .venv/Scripts/python.exe src/create_datamodel.py
 """
 from db import get_connection
 
-# Unsere Gruppe arbeitet in der Datenbank "gruppe4" (jede Gruppe hat eine eigene).
-DATABASE = "gruppe4"
+# Unsere Gruppe arbeitet in der Datenbank "gruppe3" (jede Gruppe hat eine eigene).
+DATABASE = "gruppe3"
 
-# Praefix wie vom Team verwendet (z.B. gruppe4_project_bauland_bereinigt).
-PREFIX = "gruppe4_"
+# Praefix passend zur Gruppen-Datenbank.
+PREFIX = "gruppe3_"
 
 DIM_KREIS = PREFIX + "dim_kreis"
 DIM_JAHR = PREFIX + "dim_jahr"
