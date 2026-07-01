@@ -62,6 +62,23 @@ JDBC_JAR_PATH = os.path.join(os.path.dirname(__file__), "utils", "ImpalaJDBC42.j
 JDBC_DRIVER_CLASS = "com.cloudera.impala.jdbc.Driver"  # verifiziert aus der Jar, s. Hinweis oben
 
 
+def safe_div(numerator, denominator):
+    """
+    Division, die NULL liefert, wenn der Nenner 0 oder NULL ist - statt
+    Infinity (x/0) oder NaN (0/0).
+
+    WARUM WICHTIG: Ein einzelner Infinity-/NaN-Wert vergiftet spaeter jedes
+    Fensteraggregat (AVG()/STDDEV() OVER (...)), das ihn mit einbezieht - das
+    Ergebnis wird komplett NaN. Beim Zurueckschreiben wandelt _sql_literal NaN
+    dann in NULL um. So wurde z.B. die komplette Spalte
+    standortattraktivitaets_score NULL, weil 748 Bauland-Zeilen "Flaeche = 0"
+    haben (Kaufsumme / 0 = Infinity). Details: docs/bugfix_score_nullwerte.md.
+    """
+    return F.when((denominator == 0) | denominator.isNull(), None).otherwise(
+        numerator / denominator
+    )
+
+
 def get_spark():
     # extraClassPath statt spark.jars: spark.jars laesst Spark die Datei intern
     # ueber Hadoops Utils.fetchFile kopieren/chmod'en - das braucht unter
@@ -341,9 +358,9 @@ def build_fact_bevoelkerung(spark):
         "einwohner_insgesamt",
         "einwohner_maennlich",
         "einwohner_weiblich",
-        F.round(F.col("einwohner_maennlich") / F.col("einwohner_weiblich"), 4).alias("geschlechterquotient"),
+        F.round(safe_div(F.col("einwohner_maennlich"), F.col("einwohner_weiblich")), 4).alias("geschlechterquotient"),
         F.round(
-            100.0 * (F.col("einwohner_insgesamt") - vorjahr) / vorjahr, 3
+            safe_div(100.0 * (F.col("einwohner_insgesamt") - vorjahr), vorjahr), 3
         ).alias("wachstum_vorjahr_pct"),
     )
 
@@ -386,9 +403,9 @@ def build_fact_bauland(spark):
         F.col("faelle").alias("anzahl_veraeusserungsfaelle"),
         F.col("flaeche").alias("veraeusserte_flaeche_1000qm"),
         F.col("kaufsumme").alias("kaufsumme_tsd_eur"),
-        F.round(F.col("kaufsumme") / F.col("flaeche"), 2).alias("preis_pro_qm_eur"),
-        F.round(100.0 * F.col("baureifes_land") / F.col("flaeche"), 2).alias("anteil_baureif_pct"),
-        F.round(1000.0 * F.col("flaeche") / F.col("faelle"), 2).alias("durchschnittsfall_qm"),
+        F.round(safe_div(F.col("kaufsumme"), F.col("flaeche")), 2).alias("preis_pro_qm_eur"),
+        F.round(safe_div(100.0 * F.col("baureifes_land"), F.col("flaeche")), 2).alias("anteil_baureif_pct"),
+        F.round(safe_div(1000.0 * F.col("flaeche"), F.col("faelle")), 2).alias("durchschnittsfall_qm"),
     )
 
 
@@ -432,7 +449,7 @@ def build_fact_gemeinde_stamm(spark, dim_gemeinde):
         F.col("population_total").alias("einwohner_total"),
         F.col("male").alias("einwohner_maennlich"),
         F.col("female").alias("einwohner_weiblich"),
-        F.round(100.0 * F.col("female") / F.col("population_total"), 2).alias("anteil_weiblich_pct"),
+        F.round(safe_div(100.0 * F.col("female"), F.col("population_total")), 2).alias("anteil_weiblich_pct"),
         F.col("area_km2"),
         F.col("per_km2").alias("einwohner_pro_km2"),
     )
@@ -459,8 +476,10 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     bau_window = Window.partitionBy("kreis_id").orderBy("jahr")
     bau = fact_bauland.withColumn(
         "faelle_wachstum_pct",
-        100.0 * (F.col("anzahl_veraeusserungsfaelle") - F.lag("anzahl_veraeusserungsfaelle").over(bau_window))
-        / F.lag("anzahl_veraeusserungsfaelle").over(bau_window),
+        safe_div(
+            100.0 * (F.col("anzahl_veraeusserungsfaelle") - F.lag("anzahl_veraeusserungsfaelle").over(bau_window)),
+            F.lag("anzahl_veraeusserungsfaelle").over(bau_window),
+        ),
     ).select("kreis_id", "jahr", "kaufsumme_tsd_eur", "veraeusserte_flaeche_1000qm", "preis_pro_qm_eur", "faelle_wachstum_pct")
 
     gemeinde_geo = dim_gemeinde.filter(F.col("latitude").isNotNull() & F.col("longitude").isNotNull() & F.col("kreis_id").isNotNull())
@@ -506,22 +525,28 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     return df.select(
         "kreis_id",
         "jahr",
-        F.round(F.col("wachstum_vorjahr_pct") / F.col("faelle_wachstum_pct"), 3).alias("wohnraumdruck_index"),
-        F.round(1000.0 * F.col("kaufsumme_tsd_eur") / F.col("einwohner_insgesamt"), 2).alias("baulandpreis_pro_kopf_eur"),
-        F.round(1000.0 * F.col("veraeusserte_flaeche_1000qm") / F.col("einwohner_insgesamt"), 4).alias("freiflaeche_pro_einwohner_qm"),
+        F.round(safe_div(F.col("wachstum_vorjahr_pct"), F.col("faelle_wachstum_pct")), 3).alias("wohnraumdruck_index"),
+        F.round(safe_div(1000.0 * F.col("kaufsumme_tsd_eur"), F.col("einwohner_insgesamt")), 2).alias("baulandpreis_pro_kopf_eur"),
+        F.round(safe_div(1000.0 * F.col("veraeusserte_flaeche_1000qm"), F.col("einwohner_insgesamt")), 4).alias("freiflaeche_pro_einwohner_qm"),
         F.round(
-            (F.col("wachstum_vorjahr_pct") / F.col("faelle_wachstum_pct")) * (1 + F.col("temperatur_abweichung_grad") / 10),
+            safe_div(F.col("wachstum_vorjahr_pct"), F.col("faelle_wachstum_pct")) * (1 + F.col("temperatur_abweichung_grad") / 10),
             3,
         ).alias("klima_angepasstes_wohnraumrisiko"),
-        F.round(F.col("max_gemeinde_dichte") / F.col("kreis_avg_dichte"), 3).alias("verstaedterung_index"),
+        F.round(safe_div(F.col("max_gemeinde_dichte"), F.col("kreis_avg_dichte")), 3).alias("verstaedterung_index"),
         F.round(
-            (F.col("wachstum_vorjahr_pct") - F.avg("wachstum_vorjahr_pct").over(jahr_window))
-            / F.stddev("wachstum_vorjahr_pct").over(jahr_window)
-            - (F.col("preis_pro_qm_eur") - F.avg("preis_pro_qm_eur").over(jahr_window))
-            / F.stddev("preis_pro_qm_eur").over(jahr_window)
+            safe_div(
+                F.col("wachstum_vorjahr_pct") - F.avg("wachstum_vorjahr_pct").over(jahr_window),
+                F.stddev("wachstum_vorjahr_pct").over(jahr_window),
+            )
+            - safe_div(
+                F.col("preis_pro_qm_eur") - F.avg("preis_pro_qm_eur").over(jahr_window),
+                F.stddev("preis_pro_qm_eur").over(jahr_window),
+            )
             - F.abs(
-                (F.col("temperatur_abweichung_grad") - F.avg("temperatur_abweichung_grad").over(jahr_window))
-                / F.stddev("temperatur_abweichung_grad").over(jahr_window)
+                safe_div(
+                    F.col("temperatur_abweichung_grad") - F.avg("temperatur_abweichung_grad").over(jahr_window),
+                    F.stddev("temperatur_abweichung_grad").over(jahr_window),
+                )
             ),
             3,
         ).alias("standortattraktivitaets_score"),
