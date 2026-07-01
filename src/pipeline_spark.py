@@ -542,11 +542,18 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
                 F.col("preis_pro_qm_eur") - F.avg("preis_pro_qm_eur").over(jahr_window),
                 F.stddev("preis_pro_qm_eur").over(jahr_window),
             )
-            - F.abs(
-                safe_div(
-                    F.col("temperatur_abweichung_grad") - F.avg("temperatur_abweichung_grad").over(jahr_window),
-                    F.stddev("temperatur_abweichung_grad").over(jahr_window),
-                )
+            # Klima-Term: mit coalesce(..., 0) abgesichert, damit ein fehlender
+            # Klimawert (z.B. weil die Gemeinde-Koordinaten in den Rohdaten
+            # zerstoert sind, s. docs/bugfix_score_nullwerte.md) den GESAMTEN
+            # Score nicht auf NULL zieht. Fehlt Klima, zaehlt es neutral (0).
+            - F.coalesce(
+                F.abs(
+                    safe_div(
+                        F.col("temperatur_abweichung_grad") - F.avg("temperatur_abweichung_grad").over(jahr_window),
+                        F.stddev("temperatur_abweichung_grad").over(jahr_window),
+                    )
+                ),
+                F.lit(0.0),
             ),
             3,
         ).alias("standortattraktivitaets_score"),

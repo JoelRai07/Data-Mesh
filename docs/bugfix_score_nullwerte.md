@@ -66,6 +66,35 @@ der Score wird für Zeilen mit gültigen Eingaben berechnet. Wo eine Eingabe feh
 (oder die Jahres-Streuung 0 ist), bleibt der Score bewusst NULL (statt eine ganze
 Spalte zu kippen).
 
+## Zweite (eigentliche) Ursache: Klima-Brücke ohne Koordinaten
+Nach dem `safe_div`-Fix war der Score **immer noch** komplett NULL. Grund: eine
+**zweite, unabhängige** Ursache.
+
+Der Score ist `A − B − C` (Wachstum − Preis − |Klima-Abweichung|). Ist auch nur
+ein Term NULL, ist die ganze Summe NULL. Der Klima-Term `C` war für **jede** Zeile
+NULL, weil das Klima nie auf Kreis-Ebene ankommt:
+
+- `dim_gemeinde` hat **0** gültige `latitude`/`longitude` (von 10.847 Zeilen).
+- Ursache: In `project_gemeinden` sind die Koordinaten durch einen CSV-Bug
+  zerstört. Sie nutzen **Komma als Dezimaltrennzeichen** (`9,13735`), die CSV ist
+  aber ebenfalls komma-getrennt → jede Koordinate wurde mittendrin zerrissen:
+  `latitude = '13735"'`, `longitude = '"9'` (mit Anführungszeichen-Resten).
+  → `CAST(... AS DOUBLE)` ergibt für **alle** Zeilen NULL.
+- Ohne Gemeinde-Koordinaten findet der „nächste-Klimastadt"-Join nichts →
+  `temperatur_abweichung_grad` ist überall 0 → dessen Jahres-STDDEV = 0 → der
+  z-Score-Term `C` = NULL → Score = `A − B − NULL` = NULL.
+
+**Fix (Robustheit):** Der Klima-Term wird mit `F.coalesce(..., F.lit(0.0))`
+abgesichert. Fehlt das Klima, zählt es neutral (0) statt den ganzen Score zu
+nullen. Danach ist `Score = A − B`, gefüllt wo Wachstum und Preis vorhanden sind.
+
+**Offene, tiefere Baustelle:** Die Klima-Integration selbst funktioniert damit
+noch **nicht** (Klima trägt aktuell 0 bei; auch `klima_angepasstes_wohnraumrisiko`
+ist ohne Wirkung). Die Gemeinde-Koordinaten sind aus dieser Tabelle **nicht
+wiederherstellbar**. Sauberere Lösung wäre eine **andere Klima-Brücke**, z.B.
+Klimastadt-Name → Kreis-Name (viele Klimastädte sind kreisfreie Städte), statt
+über zerstörte Koordinaten. → noch umzusetzen (mit dem Team abstimmen).
+
 ## Noch auszuführen
 Der Fix ist reiner Code. Die Tabelle wird erst mit dem **nächsten Pipeline-Lauf**
 neu befüllt (`.venv/Scripts/python.exe src/pipeline_spark.py`, braucht die
