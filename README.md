@@ -85,6 +85,33 @@ python -m venv .venv
 im Star-Schema: zuerst die Dimensionen, dann die Basis-Fakten, zuletzt die aggregierte
 KPI-Faktentabelle `gruppe3_fact_standortprofil_kpi`.
 
+## Docker
+
+Das Projekt lässt sich als Container betreiben, aber nicht vollständig isoliert, weil
+die Impala-Datenbank weiterhin extern in der DHBW-Umgebung liegt. Der Container
+enthält deshalb nur Python, Spark und Java 17; die Zugangsdaten kommen aus `.env`.
+
+Voraussetzungen:
+
+- `src/utils/ImpalaJDBC42.jar` muss lokal vorhanden sein.
+- `.env` muss ausgefüllt sein.
+
+Build und Start:
+
+```bash
+docker compose build
+docker compose run --rm pipeline
+```
+
+Für den dauerhaften Scheduler:
+
+```bash
+docker compose up scheduler
+```
+
+Der Compose-Stack mountet den JDBC-Treiber direkt in den Container und startet
+entweder die Spark-Pipeline oder den APScheduler mit demselben Image.
+
 Eigene Skripte importieren die Verbindung zentral:
 
 ```python
