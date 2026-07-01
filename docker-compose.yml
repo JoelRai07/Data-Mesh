@@ -1,0 +1,22 @@
+services:
+  pipeline:
+    build: .
+    env_file:
+      - .env
+    environment:
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./src/utils/ImpalaJDBC42.jar:/app/src/utils/ImpalaJDBC42.jar:ro
+    command: ["python", "src/pipeline_spark.py"]
+
+  scheduler:
+    build: .
+    env_file:
+      - .env
+    environment:
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./src/utils/ImpalaJDBC42.jar:/app/src/utils/ImpalaJDBC42.jar:ro
+    command: ["python", "src/scheduler.py"]
