@@ -88,12 +88,28 @@ NULL, weil das Klima nie auf Kreis-Ebene ankommt:
 abgesichert. Fehlt das Klima, zählt es neutral (0) statt den ganzen Score zu
 nullen. Danach ist `Score = A − B`, gefüllt wo Wachstum und Preis vorhanden sind.
 
-**Offene, tiefere Baustelle:** Die Klima-Integration selbst funktioniert damit
-noch **nicht** (Klima trägt aktuell 0 bei; auch `klima_angepasstes_wohnraumrisiko`
-ist ohne Wirkung). Die Gemeinde-Koordinaten sind aus dieser Tabelle **nicht
-wiederherstellbar**. Sauberere Lösung wäre eine **andere Klima-Brücke**, z.B.
-Klimastadt-Name → Kreis-Name (viele Klimastädte sind kreisfreie Städte), statt
-über zerstörte Koordinaten. → noch umzusetzen (mit dem Team abstimmen).
+### Richtige Lösung: intakte Koordinaten aus `default` lesen
+Die Zerstörung ist **nur in der `gruppe3`-Kopie** passiert. Die Original-Tabelle
+**`default.project_gemeinden`** ist intakt — dort stehen die Koordinaten im
+korrekten Format `9,43751` / `54,78252` (10.949 von 10.950 in Zahlen wandelbar,
+live geprüft). Fix in `build_dim_gemeinde` und `build_fact_gemeinde_stamm`:
+
+- Quelle: `read_table(spark, "default.project_gemeinden")` statt der kaputten
+  `gruppe3_project_gemeinden`.
+- Koordinaten parsen: `regexp_replace(col, ",", ".").cast("double")`
+  (deutsches Dezimalkomma → Punkt).
+
+**Achtung, zwei verschiedene Koordinaten-Formate:**
+- **Gemeinden:** `9,43751` — Dezimal**komma**, keine Himmelsrichtung → Komma→Punkt.
+- **Klimadaten:** `106.55E` / `5.63S` — Dezimal**punkt** + Himmelsrichtung (N/S/E/W)
+  → Buchstabe entfernen, bei S/W negieren (passiert in `build_dim_klimastadt`).
+
+Damit bekommt `dim_gemeinde` echte Koordinaten → die nächste-Klimastadt-Brücke
+funktioniert → das Klima erreicht die Kreise → der Klima-Term im Score ist echt.
+
+Das `coalesce(..., 0)` aus dem vorigen Schritt bleibt als **Sicherheitsnetz**
+(falls ein Kreis doch keine Klimastadt zugeordnet bekommt), ist aber nun nicht
+mehr die Hauptlösung.
 
 ## Noch auszuführen
 Der Fix ist reiner Code. Die Tabelle wird erst mit dem **nächsten Pipeline-Lauf**

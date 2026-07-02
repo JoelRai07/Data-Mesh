@@ -285,8 +285,12 @@ def build_dim_gemeinde(spark, dim_kreis):
     Treffern wird per Window/row_number der laengste (= spezifischste)
     Kreisname gewaehlt.
     """
+    # Aus default.project_gemeinden lesen: die Kopie in gruppe3 hat beim Import
+    # die Koordinaten zerstoert (deutsches Dezimalkomma 9,43751 wurde von der
+    # ebenfalls komma-getrennten CSV mittendrin zerrissen -> '"9' + '13735"').
+    # Die default-Tabelle ist intakt (Koordinaten im Format 9,43751).
     gem = (
-        read_table(spark, "gruppe3_project_gemeinden")
+        read_table(spark, "default.project_gemeinden")
         .filter(F.col("area_km2").isNotNull())
         .withColumn("district_clean", F.trim(F.regexp_replace(F.col("district_kreis"), '"', "")))
     )
@@ -314,8 +318,11 @@ def build_dim_gemeinde(spark, dim_kreis):
         F.col("kreis_id"),
         F.col("state_land").alias("bundesland_name"),
         F.col("postal_code"),
-        F.col("latitude").cast("double").alias("latitude"),
-        F.col("longitude").cast("double").alias("longitude"),
+        # Deutsches Dezimalkomma -> Punkt, dann in double wandeln (9,43751 -> 9.43751).
+        # (Klimadaten haben ein ANDERES Format: 106.55E / 5.63S mit Himmelsrichtung,
+        #  das wird in build_dim_klimastadt separat behandelt.)
+        F.regexp_replace(F.col("latitude"), ",", ".").cast("double").alias("latitude"),
+        F.regexp_replace(F.col("longitude"), ",", ".").cast("double").alias("longitude"),
     )
 
 
@@ -437,7 +444,8 @@ def build_fact_klima(spark):
 
 
 def build_fact_gemeinde_stamm(spark, dim_gemeinde):
-    gem = read_table(spark, "gruppe3_project_gemeinden").filter(F.col("area_km2").isNotNull())
+    # Aus default.project_gemeinden lesen (intakte Quelle, s. build_dim_gemeinde).
+    gem = read_table(spark, "default.project_gemeinden").filter(F.col("area_km2").isNotNull())
 
     joined = gem.join(
         dim_gemeinde,
