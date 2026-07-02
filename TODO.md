@@ -6,3 +6,6 @@ Umlaute/Leerzeichen in den Namen bereinigen (Datenqualität)
 NULL Werte überall bereinigen in Pipeline
 KPIs alle durchgehen ob die Werte die kommen auch wirklich erwartet werden (Es gibt Minuswerte, ist das gewollt?)
 
+- default.klimadaten -> country auf Germany #
+- default.bauland -> empty strings in Spalte kreis, spalte merkmal hat ä probleme 
+- default.bev.kennzahlen -> empty strings in Spalte kreis
