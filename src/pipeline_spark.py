@@ -115,7 +115,7 @@ def jdbc_url():
 
 
 def read_table(spark, table_name):
-    """Liest eine Tabelle aus gruppe3 per Spark-JDBC-Datasource."""
+    """Liest eine Tabelle (oder Subquery) aus Impala per Spark-JDBC-Datasource."""
     return (
         spark.read.format("jdbc")
         .option("url", jdbc_url())
@@ -123,6 +123,26 @@ def read_table(spark, table_name):
         .option("driver", JDBC_DRIVER_CLASS)
         .load()
     )
+
+
+def read_gemeinden(spark):
+    """
+    Liest die Gemeinden aus default.project_gemeinden (die gruppe3-Kopie hat
+    kaputte Koordinaten, s. build_dim_gemeinde).
+
+    WICHTIG: area_km2 wird per CAST AS STRING aus Impala geholt und erst in Spark
+    in double gewandelt. Grund: der Cloudera-JDBC-Treiber wirft bei manchen
+    double-Werten "[Cloudera][JDBC](10140) Error converting value to double"
+    (getDouble). Als STRING gelesen (getString) passiert das nicht; das Parsen
+    uebernimmt danach Spark.
+    """
+    query = (
+        "(SELECT state_land, district_kreis, municipality_name, postal_code, "
+        "population_total, male, female, "
+        "CAST(area_km2 AS STRING) AS area_km2, longitude, latitude "
+        "FROM default.project_gemeinden) t"
+    )
+    return read_table(spark, query).withColumn("area_km2", F.col("area_km2").cast("double"))
 
 
 def truncate_table(table_name):
@@ -290,7 +310,7 @@ def build_dim_gemeinde(spark, dim_kreis):
     # ebenfalls komma-getrennten CSV mittendrin zerrissen -> '"9' + '13735"').
     # Die default-Tabelle ist intakt (Koordinaten im Format 9,43751).
     gem = (
-        read_table(spark, "default.project_gemeinden")
+        read_gemeinden(spark)
         .filter(F.col("area_km2").isNotNull())
         .withColumn("district_clean", F.trim(F.regexp_replace(F.col("district_kreis"), '"', "")))
     )
@@ -444,8 +464,9 @@ def build_fact_klima(spark):
 
 
 def build_fact_gemeinde_stamm(spark, dim_gemeinde):
-    # Aus default.project_gemeinden lesen (intakte Quelle, s. build_dim_gemeinde).
-    gem = read_table(spark, "default.project_gemeinden").filter(F.col("area_km2").isNotNull())
+    # Aus default.project_gemeinden lesen (intakte Quelle, s. build_dim_gemeinde);
+    # area_km2 kommt als String und wird in read_gemeinden sicher in double gewandelt.
+    gem = read_gemeinden(spark).filter(F.col("area_km2").isNotNull())
 
     joined = gem.join(
         dim_gemeinde,
