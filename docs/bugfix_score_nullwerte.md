@@ -111,6 +111,17 @@ Das `coalesce(..., 0)` aus dem vorigen Schritt bleibt als **Sicherheitsnetz**
 (falls ein Kreis doch keine Klimastadt zugeordnet bekommt), ist aber nun nicht
 mehr die Hauptlösung.
 
+### Folgefehler: `per_km2` bricht den Spark-JDBC-Read ab
+Nach dem Umstieg auf `default.project_gemeinden` warf `build_fact_gemeinde_stamm`:
+`[Cloudera][JDBC](10140) Error converting value to double`. Ursache: Die Spalte
+`per_km2` (Typ `double`) enthält mindestens einen Wert, den der Cloudera-JDBC-
+Treiber nicht in double wandeln kann (impyla liest ihn problemlos — der JDBC-
+Treiber ist strenger). `dim_gemeinde` war nicht betroffen, weil Spark dort dank
+Spalten-Pruning `per_km2` gar nicht liest. Fix: `per_km2` nicht mehr aus der
+Quelle lesen, sondern die Dichte selbst berechnen
+(`einwohner_pro_km2 = population_total / area_km2`, fachlich identisch) — so wird
+die problematische Spalte gar nicht angefasst.
+
 ## Noch auszuführen
 Der Fix ist reiner Code. Die Tabelle wird erst mit dem **nächsten Pipeline-Lauf**
 neu befüllt (`.venv/Scripts/python.exe src/pipeline_spark.py`, braucht die

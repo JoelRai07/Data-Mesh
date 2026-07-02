@@ -459,7 +459,11 @@ def build_fact_gemeinde_stamm(spark, dim_gemeinde):
         F.col("female").alias("einwohner_weiblich"),
         F.round(safe_div(100.0 * F.col("female"), F.col("population_total")), 2).alias("anteil_weiblich_pct"),
         F.col("area_km2"),
-        F.col("per_km2").alias("einwohner_pro_km2"),
+        # per_km2 aus der Quelle NICHT lesen: der Cloudera-JDBC-Treiber wirft dort
+        # bei manchen Zeilen "Error converting value to double". Die Dichte
+        # berechnen wir stattdessen selbst (population_total / area_km2, fachlich
+        # identisch) - so wird die problematische Spalte gar nicht erst gelesen.
+        F.round(safe_div(F.col("population_total"), F.col("area_km2")), 2).alias("einwohner_pro_km2"),
     )
 
 
