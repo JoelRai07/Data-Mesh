@@ -130,19 +130,23 @@ def read_gemeinden(spark):
     Liest die Gemeinden aus default.project_gemeinden (die gruppe3-Kopie hat
     kaputte Koordinaten, s. build_dim_gemeinde).
 
-    WICHTIG: area_km2 wird per CAST AS STRING aus Impala geholt und erst in Spark
-    in double gewandelt. Grund: der Cloudera-JDBC-Treiber wirft bei manchen
-    double-Werten "[Cloudera][JDBC](10140) Error converting value to double"
-    (getDouble). Als STRING gelesen (getString) passiert das nicht; das Parsen
-    uebernimmt danach Spark.
+    Zwei JDBC-Fallstricke werden hier umgangen:
+    1) Der Cloudera-JDBC-Treiber wirft bei den double-Spalten area_km2/per_km2
+       "[Cloudera][JDBC](10140) Error converting value to double" (getDouble).
+       -> per `customSchema` als STRING lesen (getString), dann in Spark casten.
+    2) Ein Subquery-dbtable ("(SELECT ...) t") liefert mit diesem Treiber teils
+       0 Zeilen an Spark. -> Deshalb die volle Tabelle lesen (kein Subquery)
+       und die Typen nur via customSchema ueberschreiben.
     """
-    query = (
-        "(SELECT state_land, district_kreis, municipality_name, postal_code, "
-        "population_total, male, female, "
-        "CAST(area_km2 AS STRING) AS area_km2, longitude, latitude "
-        "FROM default.project_gemeinden) t"
+    return (
+        spark.read.format("jdbc")
+        .option("url", jdbc_url())
+        .option("dbtable", "default.project_gemeinden")
+        .option("driver", JDBC_DRIVER_CLASS)
+        .option("customSchema", "area_km2 STRING, per_km2 STRING")
+        .load()
+        .withColumn("area_km2", F.trim(F.col("area_km2")).cast("double"))
     )
-    return read_table(spark, query).withColumn("area_km2", F.col("area_km2").cast("double"))
 
 
 def truncate_table(table_name):
