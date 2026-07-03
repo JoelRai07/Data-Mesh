@@ -99,6 +99,5 @@ Parquet (echte Kür für Extra-Punkte).
 ## 11. Offene Punkte vor der Abgabe
 - Scheduler von Testmodus (`minute="*"`) zurück auf `hour=0, minute=0`.
 - Score-Bugfix per Pipeline-Lauf ausrollen und gegenprüfen.
-- 4. Bauland-Merkmal („Kaufwert je qm") noch aufnehmen.
 - Umlaute/Leerzeichen bereinigen.
 - Data Contract erstellen.

@@ -405,6 +405,12 @@ def build_fact_bauland(spark):
     bereits im Audit-Schritt auf feste, saubere Werte korrigiert (s.
     BAULAND_MERKMAL_CORRECTIONS in pipeline_staging_to_audit.py) - hier reicht daher ein
     einfacher Gleichheitsvergleich statt der frueheren rlike-Heuristik.
+
+    Alle 4 Merkmale der Quelle werden pivotiert (nicht nur 3 wie zuvor):
+    "Durchschnittlicher Kaufwert je qm" ist der amtliche Wert und wird 1:1 als
+    kaufwert_je_qm_eur uebernommen - zusaetzlich zur weiterhin selbst
+    berechneten KPI preis_pro_qm_eur (kaufsumme_tsd_eur / veraeusserte_flaeche_1000qm),
+    damit amtlicher und berechneter Wert vergleichbar bleiben.
     """
     bauland = read_table(spark, "gruppe3_audit_bauland").filter(F.length("kreis_id") == 5)
 
@@ -413,12 +419,13 @@ def build_fact_bauland(spark):
         F.when(F.col("merkmal") == "Veraeusserungsfaelle von Bauland", "faelle")
         .when(F.col("merkmal") == "Veraeusserte Baulandflaeche", "flaeche")
         .when(F.col("merkmal") == "Kaufsumme", "kaufsumme")
+        .when(F.col("merkmal") == "Durchschnittlicher Kaufwert je qm", "kaufwert")
         .otherwise(None),
     ).filter(F.col("kategorie").isNotNull())
 
     pivoted = (
         kategorisiert.groupBy("kreis_id", "jahr")
-        .pivot("kategorie", ["faelle", "flaeche", "kaufsumme"])
+        .pivot("kategorie", ["faelle", "flaeche", "kaufsumme", "kaufwert"])
         .agg(F.first("insgesamt"))
     )
     baureif_flaeche = (
@@ -435,6 +442,7 @@ def build_fact_bauland(spark):
         F.col("faelle").alias("anzahl_veraeusserungsfaelle"),
         F.col("flaeche").alias("veraeusserte_flaeche_1000qm"),
         F.col("kaufsumme").alias("kaufsumme_tsd_eur"),
+        F.col("kaufwert").cast("double").alias("kaufwert_je_qm_eur"),
         F.round(safe_div(F.col("kaufsumme"), F.col("flaeche")), 2).alias("preis_pro_qm_eur"),
         F.round(safe_div(100.0 * F.col("baureifes_land"), F.col("flaeche")), 2).alias("anteil_baureif_pct"),
         F.round(safe_div(1000.0 * F.col("flaeche"), F.col("faelle")), 2).alias("durchschnittsfall_qm"),
@@ -524,21 +532,33 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     ist bei Bedarf spaeter ueber eine manuelle Korrekturliste (aehnlich
     KREIS_CORRECTIONS) fuer die bekannten Sonderfaelle nachschaerfbar.
 
+    wohnraumdruck_index (und darauf aufbauend klima_angepasstes_wohnraumrisiko)
+    war urspruenglich ein Verhaeltnis zweier Wachstumsraten
+    (bevoelkerungswachstum_pct / bauland_angebotswachstum_pct). Das erzeugte
+    fachlich falsche Vorzeichen: negativ/negativ ergibt positiv, positiv/negativ
+    ergibt negativ - das Vorzeichen spiegelte also die Vorzeichen-KOMBINATION
+    beider Wachstumsraten wider, nicht den tatsaechlichen Druck (Beispiel:
+    Ostallgaeu 2021 mit wachsender Bevoelkerung + schrumpfendem Bauland-
+    Angebot - eigentlich Lehrbuch-Beispiel fuer hohen Druck - bekam den
+    negativsten Wert im Datensatz, waehrend Eisenach 2021 mit kollabierender
+    Bevoelkerung den hoechsten "Druck"-Wert bekam). Jetzt stattdessen ein
+    Verhaeltnis von Bestandsgroessen (Einwohner je 1000 qm NEU veraeusserter
+    Baulandflaeche) - beide Groessen sind nie negativ, daher ist auch der
+    Index nie negativ und steigt monoton mit dem tatsaechlichen Druck
+    (mehr Einwohner pro verfuegbarer Flaeche = mehr Druck).
+
     standortattraktivitaets_score ist ein echter z-Score per
     AVG()/STDDEV() OVER (PARTITION BY jahr) - in Spark direkt moeglich
     (anders als in Impala, wo STDDEV keine Analytic-Function ist - s.
-    Hinweis in pipeline.py).
+    Hinweis in pipeline.py). Negative Werte sind hier bewusst und korrekt
+    (= unterdurchschnittlich attraktiv ggue. allen Kreisen desselben Jahres),
+    anders als beim alten wohnraumdruck_index.
     """
     bev = fact_bevoelkerung.select("kreis_id", "jahr", "einwohner_insgesamt", "wachstum_vorjahr_pct")
 
-    bau_window = Window.partitionBy("kreis_id").orderBy("jahr")
-    bau = fact_bauland.withColumn(
-        "faelle_wachstum_pct",
-        safe_div(
-            100.0 * (F.col("anzahl_veraeusserungsfaelle") - F.lag("anzahl_veraeusserungsfaelle").over(bau_window)),
-            F.lag("anzahl_veraeusserungsfaelle").over(bau_window),
-        ),
-    ).select("kreis_id", "jahr", "kaufsumme_tsd_eur", "veraeusserte_flaeche_1000qm", "preis_pro_qm_eur", "faelle_wachstum_pct")
+    bau = fact_bauland.select(
+        "kreis_id", "jahr", "kaufsumme_tsd_eur", "veraeusserte_flaeche_1000qm", "preis_pro_qm_eur"
+    )
 
     gemeinde_mit_kreis = dim_gemeinde.filter(F.col("kreis_id").isNotNull())
     klimastadt = build_dim_klimastadt(spark)
@@ -579,11 +599,11 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     return df.select(
         "kreis_id",
         "jahr",
-        F.round(safe_div(F.col("wachstum_vorjahr_pct"), F.col("faelle_wachstum_pct")), 3).alias("wohnraumdruck_index"),
+        F.round(safe_div(F.col("einwohner_insgesamt"), F.col("veraeusserte_flaeche_1000qm")), 3).alias("wohnraumdruck_index"),
         F.round(safe_div(1000.0 * F.col("kaufsumme_tsd_eur"), F.col("einwohner_insgesamt")), 2).alias("baulandpreis_pro_kopf_eur"),
         F.round(safe_div(1000.0 * F.col("veraeusserte_flaeche_1000qm"), F.col("einwohner_insgesamt")), 4).alias("freiflaeche_pro_einwohner_qm"),
         F.round(
-            safe_div(F.col("wachstum_vorjahr_pct"), F.col("faelle_wachstum_pct")) * (1 + F.col("temperatur_abweichung_grad") / 10),
+            safe_div(F.col("einwohner_insgesamt"), F.col("veraeusserte_flaeche_1000qm")) * (1 + F.col("temperatur_abweichung_grad") / 10),
             3,
         ).alias("klima_angepasstes_wohnraumrisiko"),
         F.round(safe_div(F.col("max_gemeinde_dichte"), F.col("kreis_avg_dichte")), 3).alias("verstaedterung_index"),

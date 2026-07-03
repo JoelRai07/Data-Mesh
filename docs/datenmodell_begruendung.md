@@ -77,11 +77,11 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
 5. **Pivot der Baulanddaten (lang → breit).**
    Die Quelle hat eine Zeile je Merkmal. Live geprüft gibt es **4** distinkte
    Merkmale: `Veräußerungsfälle von Bauland`, `Veräußerte Baulandfläche`,
-   `Kaufsumme` und `Durchschnittlicher Kaufwert je qm`. Aktuell pivotiert die
-   Pipeline nur die ersten 3 in Spalten und berechnet `preis_pro_qm_eur` selbst
-   aus Kaufsumme/Fläche, statt den 4. (amtlichen) Wert direkt zu übernehmen —
-   **bekannte Lücke, noch zu schließen** (s. README/offene Punkte). Ziel bleibt
-   genau **eine** Faktenzeile je Kreis+Jahr, direkt vergleichbar.
+   `Kaufsumme` und `Durchschnittlicher Kaufwert je qm`. Die Pipeline pivotiert
+   alle 4 in Spalten: `kaufwert_je_qm_eur` übernimmt den 4. (amtlichen) Wert
+   direkt, zusätzlich bleibt `preis_pro_qm_eur` als selbst berechnete KPI aus
+   Kaufsumme/Fläche erhalten, damit amtlicher und berechneter Wert vergleichbar
+   sind. Ziel bleibt genau **eine** Faktenzeile je Kreis+Jahr, direkt vergleichbar.
 
 6. **KPI-Spalten direkt in den Basisfakten.**
    Wo eine Kennzahl aus Spalten **derselben** Zeile berechenbar ist (z. B.
@@ -91,7 +91,7 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
 
 7. **`fact_standortprofil_kpi` als aggregierte Cross-Table-Faktentabelle.**
    Manche Kennzahlen ergeben erst durch den **Join mehrerer Fakten** Sinn (z. B.
-   `wohnraumdruck_index` = Bevölkerungswachstum vs. Bauland-Angebotswachstum,
+   `wohnraumdruck_index` = Einwohner je 1000qm neu veräußerter Baulandfläche,
    oder `standortattraktivitaets_score` aus Bevölkerung + Bauland + Klima).
    Diese würden bei jeder Dashboard-Abfrage einen teuren Mehrfach-Join über
    `fact_bevoelkerung`, `fact_bauland`, `fact_klima` und `fact_gemeinde_stamm`

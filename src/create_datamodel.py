@@ -111,9 +111,11 @@ STORED AS PARQUET
 """
 
 # fact_bauland: Baulandverkaeufe je Kreis und Jahr.
-# Entsteht durch PIVOT der Quelltabelle (3 von 4 Merkmalen -> 3 Kennzahl-Spalten;
-# das 4. Merkmal "Durchschnittlicher Kaufwert je qm" wird aktuell NICHT
-# uebernommen, siehe TODO in pipeline.py).
+# Entsteht durch PIVOT der Quelltabelle (alle 4 Merkmale -> 4 Kennzahl-Spalten).
+# kaufwert_je_qm_eur ist der amtliche Wert des 4. Merkmals "Durchschnittlicher
+# Kaufwert je qm" direkt aus der Quelle, preis_pro_qm_eur bleibt zusaetzlich als
+# selbst berechnete KPI (kaufsumme_tsd_eur / veraeusserte_flaeche_1000qm)
+# erhalten - so lassen sich amtlicher und berechneter Wert vergleichen.
 create_fact_bauland = f"""
 CREATE TABLE IF NOT EXISTS {FACT_BAULAND} (
     kreis_id                       STRING COMMENT 'FK -> dim_kreis.kreis_id',
@@ -121,6 +123,7 @@ CREATE TABLE IF NOT EXISTS {FACT_BAULAND} (
     anzahl_veraeusserungsfaelle    BIGINT COMMENT 'Anzahl Veraeusserungsfaelle von Bauland',
     veraeusserte_flaeche_1000qm    BIGINT COMMENT 'Veraeusserte Baulandflaeche in 1000 qm',
     kaufsumme_tsd_eur              BIGINT COMMENT 'Kaufsumme in Tsd. EUR',
+    kaufwert_je_qm_eur             DOUBLE COMMENT 'Amtlicher Durchschnittlicher Kaufwert je qm (Merkmal aus Quelle, nicht berechnet)',
     preis_pro_qm_eur               DOUBLE COMMENT 'KPI: kaufsumme_tsd_eur / veraeusserte_flaeche_1000qm',
     anteil_baureif_pct             DOUBLE COMMENT 'KPI: Anteil baureifes Land an Gesamtflaeche',
     durchschnittsfall_qm           DOUBLE COMMENT 'KPI: mittlere Grundstuecksgroesse je Veraeusserungsfall'
@@ -161,7 +164,7 @@ create_fact_standortprofil_kpi = f"""
 CREATE TABLE IF NOT EXISTS {FACT_STANDORTPROFIL_KPI} (
     kreis_id                          STRING COMMENT 'FK -> dim_kreis.kreis_id',
     jahr                              INT    COMMENT 'FK -> dim_jahr.jahr',
-    wohnraumdruck_index               DOUBLE COMMENT 'bevoelkerungswachstum_pct / bauland_angebotswachstum_pct (fact_bevoelkerung x fact_bauland)',
+    wohnraumdruck_index               DOUBLE COMMENT 'einwohner_insgesamt / veraeusserte_flaeche_1000qm - Einwohner je 1000qm neu veraeusserter Baulandflaeche, nie negativ (fact_bevoelkerung x fact_bauland)',
     baulandpreis_pro_kopf_eur         DOUBLE COMMENT 'kaufsumme_tsd_eur*1000 / einwohner_insgesamt (fact_bauland x fact_bevoelkerung)',
     freiflaeche_pro_einwohner_qm      DOUBLE COMMENT 'veraeusserte_flaeche_1000qm*1000 / einwohner_insgesamt (fact_bauland x fact_bevoelkerung)',
     klima_angepasstes_wohnraumrisiko  DOUBLE COMMENT 'wohnraumdruck_index * (1 + temperatur_abweichung_grad/10) (fact_bevoelkerung x fact_bauland x fact_klima via dim_gemeinde)',
