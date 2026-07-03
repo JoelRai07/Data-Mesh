@@ -596,7 +596,7 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
 
     jahr_window = Window.partitionBy("jahr")
 
-    return df.select(
+    result = df.select(
         "kreis_id",
         "jahr",
         F.round(safe_div(F.col("einwohner_insgesamt"), F.col("veraeusserte_flaeche_1000qm")), 3).alias("wohnraumdruck_index"),
@@ -632,6 +632,19 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
             3,
         ).alias("standortattraktivitaets_score"),
     )
+
+    # Zeilen verwerfen, bei denen ALLE 6 KPI-Spalten NULL sind (komplett
+    # uninformative Kreis+Jahr-Kombination, z.B. weil weder Bauland- noch
+    # Klima- noch Gemeinde-Dichte-Daten fuer dieses Jahr vorlagen). Bewusst
+    # NICHT einfach nach einer einzelnen Spalte (z.B. wohnraumdruck_index)
+    # gefiltert - das wuerde auch Zeilen loeschen, die z.B. noch einen
+    # gueltigen verstaedterung_index haben (kommt vor, da dieser unabhaengig
+    # vom Bauland-Join berechnet wird).
+    KPI_SPALTEN = [
+        "wohnraumdruck_index", "baulandpreis_pro_kopf_eur", "freiflaeche_pro_einwohner_qm",
+        "klima_angepasstes_wohnraumrisiko", "verstaedterung_index", "standortattraktivitaets_score",
+    ]
+    return result.filter(F.coalesce(*KPI_SPALTEN).isNotNull())
 
 
 # ---------------------------------------------------------------------------
