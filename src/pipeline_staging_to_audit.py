@@ -2,7 +2,7 @@
 WAP-PATTERN (Write-Audit-Publish), STUFE 2: staging table -> audit table.
 
 Uebernimmt die Daten aus den Staging-Tabellen (gruppe3_staging_*, unbereinigte
-1:1-Kopie des Source Systems, s. pipeline_staging.py) und wendet die fachlich
+1:1-Kopie des Source Systems, s. pipeline_default_to_staging.py) und wendet die fachlich
 vereinbarten Bereinigungsregeln an. Alle anderen Spalten werden unveraendert
 uebernommen.
 
@@ -62,7 +62,7 @@ WARUM REINES IMPALA-SQL STATT SPARK:
   "INSERT OVERWRITE TABLE ... SELECT ..." laeuft serverseitig in Impala; bei
   gruppe3_staging_klimadaten (8.6 Mio. Zeilen) waere der Umweg ueber
   Spark-JDBC + collect() + Batch-Inserts unnoetig langsam (s. Begruendung in
-  pipeline_staging.py).
+  pipeline_default_to_staging.py).
 
 WARUM DIE SPALTENLISTE PER DESCRIBE ERMITTELT WIRD (statt hart codiert):
   gruppe3_staging_bevoelkerungzahlen hat 83 Spalten (id, kreis + 3 Spalten x
@@ -73,9 +73,9 @@ WARUM DIE SPALTENLISTE PER DESCRIBE ERMITTELT WIRD (statt hart codiert):
 
 IMMER OVERWRITE, NIE DUPLIZIEREN:
   INSERT OVERWRITE TABLE ersetzt bei jedem Lauf den kompletten Tabelleninhalt
-  (Full-Load-Pattern, analog zu pipeline_staging.py/pipeline_spark.py).
+  (Full-Load-Pattern, analog zu pipeline_default_to_staging.py/pipeline_audit_to_target.py).
 
-Ausfuehren:  .venv/Scripts/python.exe src/pipeline_audit.py
+Ausfuehren:  .venv/Scripts/python.exe src/pipeline_staging_to_audit.py
 """
 from db import get_connection
 
@@ -273,7 +273,7 @@ KREIS_CORRECTIONS = {
 # "München") - 1:1 auf die (bereits ASCII-transliterierte) deutsche
 # Schreibweise gemappt, damit der Name zu
 # gruppe3_staging_gemeinden.municipality_name passt (s. Modul-Docstring,
-# Namens-Join in pipeline_spark.py).
+# Namens-Join in pipeline_audit_to_target.py).
 CITY_NAME_CORRECTIONS = {
     "Munich": "Muenchen",
     "Cologne": "Koeln",

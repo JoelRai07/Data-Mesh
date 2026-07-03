@@ -1,7 +1,7 @@
-# Stolpersteine bei der Spark-Pipeline (pipeline_spark.py)
+# Stolpersteine bei der Spark-Pipeline (pipeline_audit_to_target.py)
 
 Dieses Dokument haelt fest, welche Probleme beim Aufsetzen der echten
-Apache-Spark-Pipeline (`src/pipeline_spark.py`) aufgetreten sind, warum sie
+Apache-Spark-Pipeline (`src/pipeline_audit_to_target.py`) aufgetreten sind, warum sie
 aufgetreten sind und wie sie geloest wurden. Gedacht als Nachschlagewerk,
 falls die Pipeline auf einem anderen Rechner (z.B. bei einem anderen
 Gruppenmitglied) zum ersten Mal laufen soll.
@@ -153,7 +153,7 @@ fehlschlaegt, oder KPI-Spalten mit Division durch 0 im ersten Jahr einer
 Zeitreihe) - das ist also kein Rand-, sondern der Regelfall.
 
 **Loesung:** Kompletter Verzicht auf `df.write.jdbc()` zum Schreiben.
-Stattdessen holt `overwrite_table()` in `pipeline_spark.py` die fertigen
+Stattdessen holt `overwrite_table()` in `pipeline_audit_to_target.py` die fertigen
 Zeilen mit `df.collect()` zum Treiber und baut daraus ganz normalen
 SQL-Text (`INSERT INTO tabelle (...) VALUES (...), (...), ...`), den impyla
 ausfuehrt - keine Parameter-Bindung mehr, also auch keine
@@ -203,9 +203,9 @@ Kompromiss aus Zeitnot.
 2. `src/utils/ImpalaJDBC42.jar` an Ort und Stelle bringen.
 3. `.env` ausfuellen (s. `.env.example`).
 4. `pip install -r requirements.txt` (installiert u.a. `pyspark`).
-5. `JAVA_HOME` auf das JDK-17-Verzeichnis setzen, bevor `pipeline_spark.py`
+5. `JAVA_HOME` auf das JDK-17-Verzeichnis setzen, bevor `pipeline_audit_to_target.py`
    oder `scheduler.py` gestartet wird (scheduler.py macht das inzwischen
    automatisch, s. Kommentar dort - Pfad ggf. anpassen).
 6. `python src/create_datamodel.py` (idempotent, legt fehlende Tabellen an).
-7. `python src/pipeline_spark.py` zum manuellen Testen, oder
+7. `python src/pipeline_audit_to_target.py` zum manuellen Testen, oder
    `python src/scheduler.py` fuer den dauerhaften 00:00-Uhr-Batch-Job.

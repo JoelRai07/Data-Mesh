@@ -1,5 +1,5 @@
 """
-DELIVERABLE 2b: Scheduler - fuehrt die Spark-Pipeline (pipeline_spark.py) als
+DELIVERABLE 2b: Scheduler - fuehrt die Spark-Pipeline (pipeline_audit_to_target.py) als
 taeglichen Batch-Job um 00:00 Uhr aus.
 
 Warum APScheduler statt z.B. Windows Task Scheduler / cron?
@@ -14,12 +14,12 @@ Warum APScheduler statt z.B. Windows Task Scheduler / cron?
     um 00:00 Uhr" 1:1 ab, ohne eine eigene Sleep-Schleife zu programmieren.
 
 WARUM JAVA_HOME HIER GESETZT WIRD:
-  pipeline_spark.py startet eine JVM (PySpark) und braucht dafuer JAVA_HOME.
+  pipeline_audit_to_target.py startet eine JVM (PySpark) und braucht dafuer JAVA_HOME.
   Wenn man scheduler.py z.B. als Windows-Dienst oder per Autostart laufen
   laesst, ist JAVA_HOME dort NICHT automatisch gesetzt (das war bisher nur in
   der manuellen PowerShell-Session der Fall, in der wir getestet haben).
   Deshalb wird es hier zu Beginn explizit fuer den Python-Prozess gesetzt,
-  BEVOR pipeline_spark importiert wird (Spark startet seine JVM erst beim
+  BEVOR pipeline_audit_to_target importiert wird (Spark startet seine JVM erst beim
   ersten SparkSession-Aufruf, also rechtzeitig).
 
   WICHTIG: Der Pfad ist NICHT hartkodiert, sondern kommt aus der .env-Datei
@@ -31,7 +31,7 @@ WARUM JAVA_HOME HIER GESETZT WIRD:
 
 Funktionsweise:
   - Dieses Skript startet einen Dauerlauf-Prozess (blockiert den Thread).
-  - Jeden Tag um 00:00 Uhr wird pipeline_spark.main() aufgerufen.
+  - Jeden Tag um 00:00 Uhr wird pipeline_audit_to_target.main() aufgerufen.
   - Schlaegt ein Lauf fehl (z.B. Impala kurzzeitig nicht erreichbar), wird der
     Fehler geloggt, der Scheduler selbst laeuft aber weiter und versucht es
     am naechsten Tag erneut - ein einzelner Fehlschlag soll nicht den ganzen
@@ -61,7 +61,7 @@ if JAVA_HOME and os.path.isdir(JAVA_HOME):
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-import pipeline_spark
+import pipeline_audit_to_target
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,7 +76,7 @@ def run_pipeline_job():
     damit ein fehlgeschlagener Lauf den Scheduler nicht crasht."""
     logger.info("Starte geplanten Pipeline-Lauf ...")
     try:
-        pipeline_spark.main()
+        pipeline_audit_to_target.main()
         logger.info("Pipeline-Lauf erfolgreich abgeschlossen.")
     except Exception:
         # bewusst breites except: der Scheduler-Prozess soll auch nach einem

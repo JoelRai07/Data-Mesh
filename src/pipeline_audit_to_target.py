@@ -5,7 +5,7 @@ Impala-SQL-Strings wie in pipeline.py.
 
 WARUM SO?
   - Spark wird hier als eigenstaendige Verarbeitungs-Engine genutzt: die
-    bereits bereinigten audit_*-Tabellen (s. pipeline_audit.py, STUFE 2 des
+    bereits bereinigten audit_*-Tabellen (s. pipeline_staging_to_audit.py, STUFE 2 des
     WAP-Patterns) werden per Spark JDBC-Datasource AUS Impala gelesen
     (ueber denselben HiveServer2/Impala-Endpoint, den auch impyla nutzt - kein
     separater Cluster-Zugang noetig), als Spark-DataFrames transformiert und
@@ -44,7 +44,7 @@ ACHTUNG - UNGETESTETE ANNAHMEN, DIE IHR VOR DEM ERSTEN LAUF PRUEFEN MUESST:
 Der JDBC-Treiber liegt unter src/utils/ImpalaJDBC42.jar (nicht eingecheckt,
 muss lokal vorhanden sein) - Pfad wird unten ueber JDBC_JAR_PATH referenziert.
 
-Ausfuehren:  .venv/Scripts/python.exe src/pipeline_spark.py
+Ausfuehren:  .venv/Scripts/python.exe src/pipeline_audit_to_target.py
 """
 import math
 import os
@@ -87,7 +87,7 @@ def get_spark():
     # den Treiber nur an den JVM-Classpath an, ohne diesen Hadoop-Dateischritt.
     return (
         SparkSession.builder
-        .appName("gruppe3_pipeline_spark")
+        .appName("gruppe3_pipeline_audit_to_target")
         .master("local[*]")
         .config("spark.driver.extraClassPath", JDBC_JAR_PATH)
         .config("spark.executor.extraClassPath", JDBC_JAR_PATH)
@@ -129,7 +129,7 @@ def read_table(spark, table_name):
 def read_gemeinden(spark):
     """
     Liest die Gemeinden aus gruppe3_audit_gemeinden (bereits bereinigt, s.
-    pipeline_audit.py: municipality_name transliteriert, district_kreis ab
+    pipeline_staging_to_audit.py: municipality_name transliteriert, district_kreis ab
     dem ersten Komma abgeschnitten + transliteriert). Koordinaten sind dort
     unveraendert im Komma-Dezimalformat der Quelle ("9,43751").
 
@@ -287,7 +287,7 @@ def build_dim_jahr(spark):
 def build_dim_klimastadt(spark):
     """
     country = 'Germany' ist bereits in gruppe3_audit_klimadaten gefiltert und
-    city bereits transliteriert (s. pipeline_audit.py). latitude/longitude
+    city bereits transliteriert (s. pipeline_staging_to_audit.py). latitude/longitude
     liegen dort im selben Komma-Dezimalformat wie gruppe3_audit_gemeinden vor
     (Himmelsrichtungs-Buchstabe/Vorzeichen-Umrechnung ist schon im Audit-
     Schritt erledigt) - Parsing hier daher identisch zu build_dim_gemeinde.
@@ -403,7 +403,7 @@ def build_fact_bauland(spark):
     Die merkmal-Spalte war durch einen Encoding-Fehler beschaedigt
     ('Ver?u?erungsfaelle...' statt 'Veraeusserungsfaelle...'), das ist aber
     bereits im Audit-Schritt auf feste, saubere Werte korrigiert (s.
-    BAULAND_MERKMAL_CORRECTIONS in pipeline_audit.py) - hier reicht daher ein
+    BAULAND_MERKMAL_CORRECTIONS in pipeline_staging_to_audit.py) - hier reicht daher ein
     einfacher Gleichheitsvergleich statt der frueheren rlike-Heuristik.
     """
     bauland = read_table(spark, "gruppe3_audit_bauland").filter(F.length("kreis_id") == 5)
@@ -443,7 +443,7 @@ def build_fact_bauland(spark):
 
 def build_fact_klima(spark):
     # country = 'Germany' ist bereits in gruppe3_audit_klimadaten gefiltert,
-    # city bereits transliteriert (s. pipeline_audit.py) - dieselbe
+    # city bereits transliteriert (s. pipeline_staging_to_audit.py) - dieselbe
     # Schreibweise wie dim_klimastadt.stadt_name/dim_gemeinde.gemeinde_name,
     # damit der Namens-Join in build_fact_standortprofil_kpi funktioniert.
     klima = read_table(spark, "gruppe3_audit_klimadaten").filter(
@@ -506,7 +506,7 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     Verdichtet alle Basis-Fakten zu Kreis x Jahr-KPIs. Klima haengt nur auf
     Stadt-Ebene, daher ueber dim_gemeinde + Klimastadt gleichen Namens
     (gemeinde_name == stadt_name, beide Seiten transliteriert in
-    pipeline_audit.py) auf Kreis-Ebene hochaggregiert.
+    pipeline_staging_to_audit.py) auf Kreis-Ebene hochaggregiert.
 
     WARUM NAMENS- STATT KOORDINATEN-JOIN?
     Frueher wurde ueber die naechstgelegene Klimastadt per euklidischer lat/

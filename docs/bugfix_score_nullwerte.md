@@ -42,7 +42,7 @@ Zwei Effekte greifen ineinander:
 — deshalb 0 von 4720, obwohl ~3900 Zeilen einen gültigen Preis haben.
 
 ## Lösung
-Neue Hilfsfunktion `safe_div(numerator, denominator)` in `pipeline_spark.py`:
+Neue Hilfsfunktion `safe_div(numerator, denominator)` in `pipeline_audit_to_target.py`:
 liefert **NULL statt Infinity/NaN**, wenn der Nenner 0 oder NULL ist.
 
 ```python
@@ -124,7 +124,7 @@ die problematische Spalte gar nicht angefasst.
 
 ## Noch auszuführen
 Der Fix ist reiner Code. Die Tabelle wird erst mit dem **nächsten Pipeline-Lauf**
-neu befüllt (`.venv/Scripts/python.exe src/pipeline_spark.py`, braucht die
+neu befüllt (`.venv/Scripts/python.exe src/pipeline_audit_to_target.py`, braucht die
 Spark-Umgebung: JDK 17 + `src/utils/ImpalaJDBC42.jar`). Danach gegenprüfen:
 
 ```sql

@@ -17,4 +17,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
 
-CMD ["python", "src/pipeline_spark.py"]
+CMD ["python", "src/pipeline_audit_to_target.py"]

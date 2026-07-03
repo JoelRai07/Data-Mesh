@@ -15,8 +15,8 @@ Staging-Tabellen (Ziel, Datenbank gruppe3):
   gruppe3_staging_bauland, gruppe3_staging_bevoelkerungzahlen,
   gruppe3_staging_gemeinden, gruppe3_staging_klimadaten
 
-WARUM REINES IMPALA-SQL STATT SPARK (anders als pipeline_spark.py)?
-  Diese Pipeline transformiert nichts - reines Kopieren. pipeline_spark.py
+WARUM REINES IMPALA-SQL STATT SPARK (anders als pipeline_audit_to_target.py)?
+  Diese Pipeline transformiert nichts - reines Kopieren. pipeline_audit_to_target.py
   schreibt Ergebnisse per collect() + impyla-INSERT-Batches zurueck (noetig,
   weil der Impala-JDBC-Treiber bei Spark-JDBC-Batch-Inserts mit NULL-Werten
   den SQL-Typ nicht bestimmen kann, s. Docstring dort). Das waere hier aber
@@ -35,9 +35,9 @@ WARUM "CREATE TABLE ... LIKE ..." STATT MANUELLER SPALTENLISTE?
 IMMER OVERWRITE, NIE DUPLIZIEREN:
   INSERT OVERWRITE TABLE (nicht INSERT INTO) ersetzt bei jedem Lauf den
   kompletten Tabelleninhalt - mehrfaches Ausfuehren erzeugt keine Duplikate
-  (Full-Load-Pattern, analog zu overwrite_table() in pipeline_spark.py).
+  (Full-Load-Pattern, analog zu overwrite_table() in pipeline_audit_to_target.py).
 
-Ausfuehren:  .venv/Scripts/python.exe src/pipeline_staging.py
+Ausfuehren:  .venv/Scripts/python.exe src/pipeline_default_to_staging.py
 """
 from db import get_connection
 

@@ -25,7 +25,7 @@ Data-Mesh/
 ├── src/                              # Unser Code
 │   ├── db.py                        # Zentraler Verbindungs-Helfer (get_connection, impyla)
 │   ├── create_datamodel.py          # DELIVERABLE 1: DDLs für das Star-Schema (4 Dim. + 5 Fakten)
-│   ├── pipeline_spark.py            # DELIVERABLE 2: Befüllt das Datenmodell aus den Rohdaten (PySpark)
+│   ├── pipeline_audit_to_target.py            # DELIVERABLE 2: Befüllt das Datenmodell aus den Rohdaten (PySpark)
 │   ├── scheduler.py                 # DELIVERABLE 2b: führt die Pipeline täglich um 00:00 aus (APScheduler)
 │   └── utils/                       # Hilfsskripte (nicht Teil der Abgabe-Logik)
 │       ├── test_connection.py       # Prüft die Verbindung zu Impala
@@ -63,7 +63,7 @@ python -m venv .venv
 #    (Workload-Username & Workload-Passwort aus dem Cloudera-Portal)
 ```
 
-**Zusätzlich nur für Spark (`pipeline_spark.py` / `scheduler.py`):**
+**Zusätzlich nur für Spark (`pipeline_audit_to_target.py` / `scheduler.py`):**
 - **JDK 17** installiert; Pfad in `.env` als `JAVA_HOME_JDK17` eintragen (siehe `.env.example`).
 - Den JDBC-Treiber **`ImpalaJDBC42.jar`** unter `src/utils/` ablegen (ist per `.gitignore`
   ausgeschlossen, muss also lokal besorgt werden).
@@ -81,13 +81,13 @@ python -m venv .venv
 .venv/Scripts/python.exe src/create_datamodel.py
 
 # 2. Datenmodell befüllen mit Spark - idempotent (TRUNCATE + INSERT), muss nach 1. laufen
-.venv/Scripts/python.exe src/pipeline_spark.py
+.venv/Scripts/python.exe src/pipeline_audit_to_target.py
 
 # 3. (optional) Pipeline täglich um 00:00 automatisch ausführen - läuft dauerhaft
 .venv/Scripts/python.exe src/scheduler.py
 ```
 
-`pipeline_spark.py` füllt die Tabellen in fester Reihenfolge entlang der Abhängigkeiten
+`pipeline_audit_to_target.py` füllt die Tabellen in fester Reihenfolge entlang der Abhängigkeiten
 im Star-Schema: zuerst die Dimensionen, dann die Basis-Fakten, zuletzt die aggregierte
 KPI-Faktentabelle `gruppe3_fact_standortprofil_kpi`.
 
@@ -180,7 +180,7 @@ Details + Begründung: [docs/datenmodell_begruendung.md](docs/datenmodell_begrue
 - [x] **Datenmodell (DDLs)** + Begründung
       → [src/create_datamodel.py](src/create_datamodel.py), [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md)
 - [x] **Pipeline** zur Befüllung (Spark, idempotent) inkl. **Scheduler**
-      → [src/pipeline_spark.py](src/pipeline_spark.py), [src/scheduler.py](src/scheduler.py)
+      → [src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py), [src/scheduler.py](src/scheduler.py)
 - [ ] **Data Contract** (Theorie/Umsetzung folgt aus dem Unterricht am Do.)
 - [ ] README & Abgabe finalisieren (siehe offene Punkte unten)
 
@@ -189,7 +189,7 @@ Details + Begründung: [docs/datenmodell_begruendung.md](docs/datenmodell_begrue
 - **Scheduler steht im Testmodus** (`CronTrigger(minute="*")`, läuft jede Minute) →
   vor der Abgabe in [src/scheduler.py](src/scheduler.py) zurück auf
   `CronTrigger(hour=0, minute=0)` (täglich 00:00, wie gefordert) stellen.
-- **`WindowExec`-Warnung in `pipeline_spark.py`** (Window-Funktionen ohne `PARTITION BY`,
+- **`WindowExec`-Warnung in `pipeline_audit_to_target.py`** (Window-Funktionen ohne `PARTITION BY`,
   z.B. Surrogat-`gemeinde_id`). Bei unseren Datengrößen (~10–15k Zeilen) unkritisch,
   sollte für saubere Skalierung aber behoben werden.
 - **log4j-`ClassCastException` beim JDBC-Connect**: kosmetisches Rauschen aus dem
@@ -198,7 +198,7 @@ Details + Begründung: [docs/datenmodell_begruendung.md](docs/datenmodell_begrue
 - **Score-Bug behoben (Code), Pipeline-Lauf steht noch aus:** `standortattraktivitaets_score`
   war komplett NULL (Division durch 0 bei `flaeche = 0` → Infinity → vergiftete die
   z-Score-Fensteraggregate). Fix per neuer `safe_div`-Funktion eingebaut; die Tabelle
-  wird erst mit dem nächsten `pipeline_spark.py`-Lauf korrekt neu befüllt. Details:
+  wird erst mit dem nächsten `pipeline_audit_to_target.py`-Lauf korrekt neu befüllt. Details:
   [docs/bugfix_score_nullwerte.md](docs/bugfix_score_nullwerte.md).
 - Weitere KPIs in `fact_standortprofil_kpi` können bei kleinen Nennern extreme Werte
   annehmen — fachliche Plausibilität vor der Präsentation prüfen.
