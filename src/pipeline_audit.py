@@ -9,6 +9,13 @@ uebernommen.
 Bereinigungsregeln je Tabelle:
   - gruppe3_staging_klimadaten:
       nur Zeilen mit country = 'Germany'
+      city:      bekannte englische Stadtnamen 1:1 auf die deutsche
+                 Schreibweise gemappt (s. CITY_NAME_CORRECTIONS, z.B.
+                 "Munich" -> "Muenchen"), danach Umlaute -> ae/oe/ue (z.B.
+                 "Düsseldorf" -> "Duesseldorf"), damit Staedtenamen im
+                 selben Format vorliegen wie
+                 gruppe3_staging_gemeinden.municipality_name (fuer einen
+                 spaeteren Join ueber den Namen statt ueber Koordinaten)
       latitude/longitude: vom Himmelsrichtungs-Format ("53.84N", "9.55E")
                          in dasselbe Komma-Dezimalformat wie
                          gruppe3_staging_gemeinden ueberfuehrt (z.B. "53.84N"
@@ -261,6 +268,22 @@ KREIS_CORRECTIONS = {
 }
 
 
+# gruppe3_staging_klimadaten.city: manche deutschen Staedte sind unter ihrem
+# englischen Namen erfasst statt unter dem deutschen (z.B. "Munich" statt
+# "München") - 1:1 auf die (bereits ASCII-transliterierte) deutsche
+# Schreibweise gemappt, damit der Name zu
+# gruppe3_staging_gemeinden.municipality_name passt (s. Modul-Docstring,
+# Namens-Join in pipeline_spark.py).
+CITY_NAME_CORRECTIONS = {
+    "Munich": "Muenchen",
+    "Cologne": "Koeln",
+    "Hanover": "Hannover",
+    "Nuremberg": "Nuernberg",
+    "Brunswick": "Braunschweig",
+    "Ratisbon": "Regensburg",
+}
+
+
 # Je Thema: SQL-Ausdruck je zu bereinigender Spalte + optionaler WHERE-Filter.
 AUDIT_RULES = {
     "bauland": {
@@ -285,6 +308,7 @@ AUDIT_RULES = {
     },
     "klimadaten": {
         "columns": {
+            "city": transliterate_umlauts(fix_known_values(trim("city"), CITY_NAME_CORRECTIONS)),
             "latitude": compass_to_signed_decimal("latitude", "S"),
             "longitude": compass_to_signed_decimal("longitude", "W"),
         },

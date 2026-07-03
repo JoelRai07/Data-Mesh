@@ -5,7 +5,8 @@ Impala-SQL-Strings wie in pipeline.py.
 
 WARUM SO?
   - Spark wird hier als eigenstaendige Verarbeitungs-Engine genutzt: die
-    project_*-Rohdaten werden per Spark JDBC-Datasource AUS Impala gelesen
+    bereits bereinigten audit_*-Tabellen (s. pipeline_audit.py, STUFE 2 des
+    WAP-Patterns) werden per Spark JDBC-Datasource AUS Impala gelesen
     (ueber denselben HiveServer2/Impala-Endpoint, den auch impyla nutzt - kein
     separater Cluster-Zugang noetig), als Spark-DataFrames transformiert und
     per Spark JDBC-Datasource WIEDER nach Impala zurueckgeschrieben.
@@ -127,8 +128,10 @@ def read_table(spark, table_name):
 
 def read_gemeinden(spark):
     """
-    Liest die Gemeinden aus default.project_gemeinden (die gruppe3-Kopie hat
-    kaputte Koordinaten, s. build_dim_gemeinde).
+    Liest die Gemeinden aus gruppe3_audit_gemeinden (bereits bereinigt, s.
+    pipeline_audit.py: municipality_name transliteriert, district_kreis ab
+    dem ersten Komma abgeschnitten + transliteriert). Koordinaten sind dort
+    unveraendert im Komma-Dezimalformat der Quelle ("9,43751").
 
     Zwei JDBC-Fallstricke werden hier umgangen:
     1) Der Cloudera-JDBC-Treiber wirft bei den double-Spalten area_km2/per_km2
@@ -141,7 +144,7 @@ def read_gemeinden(spark):
     return (
         spark.read.format("jdbc")
         .option("url", jdbc_url())
-        .option("dbtable", "default.project_gemeinden")
+        .option("dbtable", "gruppe3_audit_gemeinden")
         .option("driver", JDBC_DRIVER_CLASS)
         .option("customSchema", "area_km2 STRING, per_km2 STRING")
         .load()
@@ -241,7 +244,7 @@ BUNDESLAND_NAMEN = {
 
 
 def build_dim_kreis(spark):
-    bev = read_table(spark, "gruppe3_project_bevoelkerungzahlen")
+    bev = read_table(spark, "gruppe3_audit_bevoelkerungzahlen")
 
     bundesland_expr = F.create_map([F.lit(x) for kv in BUNDESLAND_NAMEN.items() for x in kv])
 
@@ -267,7 +270,7 @@ def build_dim_jahr(spark):
     s. "Accept timed out" beim ersten Testlauf).
     """
     bauland_jahre = (
-        read_table(spark, "gruppe3_project_bauland")
+        read_table(spark, "gruppe3_audit_bauland")
         .select(F.col("jahr").cast(IntegerType()).alias("jahr"))
         .filter(F.col("jahr").isNotNull())
     )
@@ -282,17 +285,18 @@ def build_dim_jahr(spark):
 
 
 def build_dim_klimastadt(spark):
-    klima = read_table(spark, "gruppe3_project_klimadaten").filter(F.col("country") == "Germany")
+    """
+    country = 'Germany' ist bereits in gruppe3_audit_klimadaten gefiltert und
+    city bereits transliteriert (s. pipeline_audit.py). latitude/longitude
+    liegen dort im selben Komma-Dezimalformat wie gruppe3_audit_gemeinden vor
+    (Himmelsrichtungs-Buchstabe/Vorzeichen-Umrechnung ist schon im Audit-
+    Schritt erledigt) - Parsing hier daher identisch zu build_dim_gemeinde.
+    """
+    klima = read_table(spark, "gruppe3_audit_klimadaten")
     return klima.select(
         F.col("city").alias("stadt_name"),
-        (
-            F.regexp_replace("latitude", "[NS]", "").cast("double")
-            * F.when(F.col("latitude").endswith("S"), -1).otherwise(1)
-        ).alias("latitude"),
-        (
-            F.regexp_replace("longitude", "[EW]", "").cast("double")
-            * F.when(F.col("longitude").endswith("W"), -1).otherwise(1)
-        ).alias("longitude"),
+        F.regexp_replace(F.col("latitude"), ",", ".").cast("double").alias("latitude"),
+        F.regexp_replace(F.col("longitude"), ",", ".").cast("double").alias("longitude"),
     ).distinct()
 
 
@@ -309,10 +313,6 @@ def build_dim_gemeinde(spark, dim_kreis):
     Treffern wird per Window/row_number der laengste (= spezifischste)
     Kreisname gewaehlt.
     """
-    # Aus default.project_gemeinden lesen: die Kopie in gruppe3 hat beim Import
-    # die Koordinaten zerstoert (deutsches Dezimalkomma 9,43751 wurde von der
-    # ebenfalls komma-getrennten CSV mittendrin zerrissen -> '"9' + '13735"').
-    # Die default-Tabelle ist intakt (Koordinaten im Format 9,43751).
     gem = (
         read_gemeinden(spark)
         .filter(F.col("area_km2").isNotNull())
@@ -343,8 +343,8 @@ def build_dim_gemeinde(spark, dim_kreis):
         F.col("state_land").alias("bundesland_name"),
         F.col("postal_code"),
         # Deutsches Dezimalkomma -> Punkt, dann in double wandeln (9,43751 -> 9.43751).
-        # (Klimadaten haben ein ANDERES Format: 106.55E / 5.63S mit Himmelsrichtung,
-        #  das wird in build_dim_klimastadt separat behandelt.)
+        # Klimadaten liegen nach dem Audit-Schritt im selben Format vor (s.
+        # build_dim_klimastadt), das hier verwendete Parsing ist identisch.
         F.regexp_replace(F.col("latitude"), ",", ".").cast("double").alias("latitude"),
         F.regexp_replace(F.col("longitude"), ",", ".").cast("double").alias("longitude"),
     )
@@ -361,7 +361,7 @@ def build_fact_bevoelkerung(spark):
     array, explode() macht daraus eine Zeile pro Jahr - der idiomatische
     Spark-Ersatz fuer ein generisches UNPIVOT.
     """
-    bev = read_table(spark, "gruppe3_project_bevoelkerungzahlen").filter(F.length("id") == 5)
+    bev = read_table(spark, "gruppe3_audit_bevoelkerungzahlen").filter(F.length("id") == 5)
 
     jahres_structs = [
         F.struct(
@@ -400,18 +400,19 @@ def build_fact_bauland(spark):
     """
     Echtes DataFrame.pivot() statt CASE-WHEN-Aggregation (so wie in
     pipeline.py mangels Pivot-Support in einfachem Impala-SQL geloest).
-    Die merkmal-Spalte ist durch einen Encoding-Fehler beschaedigt
-    ('Ver?u?erungsfaelle...' statt 'Veraeusserungsfaelle...'), daher zuerst
-    per rlike auf unbeschaedigte Teilstrings auf saubere Kategorie-Labels
-    normalisiert, bevor pivotiert wird.
+    Die merkmal-Spalte war durch einen Encoding-Fehler beschaedigt
+    ('Ver?u?erungsfaelle...' statt 'Veraeusserungsfaelle...'), das ist aber
+    bereits im Audit-Schritt auf feste, saubere Werte korrigiert (s.
+    BAULAND_MERKMAL_CORRECTIONS in pipeline_audit.py) - hier reicht daher ein
+    einfacher Gleichheitsvergleich statt der frueheren rlike-Heuristik.
     """
-    bauland = read_table(spark, "gruppe3_project_bauland").filter(F.length("kreis_id") == 5)
+    bauland = read_table(spark, "gruppe3_audit_bauland").filter(F.length("kreis_id") == 5)
 
     kategorisiert = bauland.withColumn(
         "kategorie",
-        F.when(F.col("merkmal").rlike("erungsf.lle"), "faelle")
-        .when(F.col("merkmal").rlike("erte Bauland"), "flaeche")
-        .when(F.col("merkmal").startswith("Kaufsumme"), "kaufsumme")
+        F.when(F.col("merkmal") == "Veraeusserungsfaelle von Bauland", "faelle")
+        .when(F.col("merkmal") == "Veraeusserte Baulandflaeche", "flaeche")
+        .when(F.col("merkmal") == "Kaufsumme", "kaufsumme")
         .otherwise(None),
     ).filter(F.col("kategorie").isNotNull())
 
@@ -441,8 +442,12 @@ def build_fact_bauland(spark):
 
 
 def build_fact_klima(spark):
-    klima = read_table(spark, "gruppe3_project_klimadaten").filter(
-        (F.col("country") == "Germany") & F.col("averagetemperature").isNotNull()
+    # country = 'Germany' ist bereits in gruppe3_audit_klimadaten gefiltert,
+    # city bereits transliteriert (s. pipeline_audit.py) - dieselbe
+    # Schreibweise wie dim_klimastadt.stadt_name/dim_gemeinde.gemeinde_name,
+    # damit der Namens-Join in build_fact_standortprofil_kpi funktioniert.
+    klima = read_table(spark, "gruppe3_audit_klimadaten").filter(
+        F.col("averagetemperature").isNotNull()
     ).withColumn("jahr", F.substring("dt", 1, 4).cast(IntegerType()))
 
     jahresmittel = (
@@ -468,8 +473,8 @@ def build_fact_klima(spark):
 
 
 def build_fact_gemeinde_stamm(spark, dim_gemeinde):
-    # Aus default.project_gemeinden lesen (intakte Quelle, s. build_dim_gemeinde);
-    # area_km2 kommt als String und wird in read_gemeinden sicher in double gewandelt.
+    # Aus gruppe3_audit_gemeinden lesen (s. read_gemeinden); area_km2 kommt
+    # als String und wird dort sicher in double gewandelt.
     gem = read_gemeinden(spark).filter(F.col("area_km2").isNotNull())
 
     joined = gem.join(
@@ -499,9 +504,25 @@ def build_fact_gemeinde_stamm(spark, dim_gemeinde):
 def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_bauland, fact_klima, fact_gemeinde_stamm):
     """
     Verdichtet alle Basis-Fakten zu Kreis x Jahr-KPIs. Klima haengt nur auf
-    Stadt-Ebene, daher ueber dim_gemeinde + naechstgelegene Klimastadt (per
-    einfacher euklidischer lat/long-Distanz, fuer Deutschlands Ausdehnung
-    ausreichend genau) auf Kreis-Ebene hochaggregiert.
+    Stadt-Ebene, daher ueber dim_gemeinde + Klimastadt gleichen Namens
+    (gemeinde_name == stadt_name, beide Seiten transliteriert in
+    pipeline_audit.py) auf Kreis-Ebene hochaggregiert.
+
+    WARUM NAMENS- STATT KOORDINATEN-JOIN?
+    Frueher wurde ueber die naechstgelegene Klimastadt per euklidischer lat/
+    long-Distanz gematcht. Der Namens-Join ist einfacher, deckt aber nur
+    Faelle ab, in denen der Gemeindename nach der Transliteration EXAKT dem
+    Klimastadt-Namen entspricht - von den 81 deutschen Staedten in
+    gruppe3_audit_klimadaten matchen so ca. 59 (der Rest sind englische
+    Namen wie "Munich"/"Cologne" oder mehrdeutige Kurzformen wie "Frankfurt",
+    die sowohl zu "Frankfurt am Main" als auch "Frankfurt (Oder)" passen
+    wuerden). Bewusst kein Fuzzy-/Contains-Match: bei mehrdeutigen Kurz-
+    namen (z.B. "Oldenburg" passt auf 7 Gemeinden) waere die Auswahl reine
+    Rateroei. Gemeinden ohne Namens-Treffer bleiben ohne Klimawert (per
+    LEFT JOIN + fillna 0.0 unten, wie zuvor bei fehlenden Koordinaten).
+    Nachbereinigung: Der Wechsel weg vom Distanz-Match kostet Genauigkeit,
+    ist bei Bedarf spaeter ueber eine manuelle Korrekturliste (aehnlich
+    KREIS_CORRECTIONS) fuer die bekannten Sonderfaelle nachschaerfbar.
 
     standortattraktivitaets_score ist ein echter z-Score per
     AVG()/STDDEV() OVER (PARTITION BY jahr) - in Spark direkt moeglich
@@ -519,18 +540,14 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
         ),
     ).select("kreis_id", "jahr", "kaufsumme_tsd_eur", "veraeusserte_flaeche_1000qm", "preis_pro_qm_eur", "faelle_wachstum_pct")
 
-    gemeinde_geo = dim_gemeinde.filter(F.col("latitude").isNotNull() & F.col("longitude").isNotNull() & F.col("kreis_id").isNotNull())
+    gemeinde_mit_kreis = dim_gemeinde.filter(F.col("kreis_id").isNotNull())
     klimastadt = build_dim_klimastadt(spark)
 
-    distanz = gemeinde_geo.crossJoin(klimastadt.withColumnRenamed("latitude", "k_lat").withColumnRenamed("longitude", "k_lon")) \
-        .withColumn(
-            "distanz2",
-            F.pow(F.col("latitude") - F.col("k_lat"), 2) + F.pow(F.col("longitude") - F.col("k_lon"), 2),
-        )
-    naechste_window = Window.partitionBy("gemeinde_id").orderBy("distanz2")
     naechste_stadt = (
-        distanz.withColumn("rn", F.row_number().over(naechste_window))
-        .filter(F.col("rn") == 1)
+        gemeinde_mit_kreis.join(
+            klimastadt,
+            gemeinde_mit_kreis.gemeinde_name == klimastadt.stadt_name,
+        )
         .select("gemeinde_id", "kreis_id", "stadt_name")
     )
 
