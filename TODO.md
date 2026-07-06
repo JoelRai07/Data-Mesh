@@ -8,6 +8,12 @@ Benutzung/Überblick: [README.md](README.md) · Konsumenten-Sicht: [docs/data_co
 - [ ] **End-to-End-Abnahmetest:** `src/utils/reset_database.py` → `src/run_pipeline.py` →
       zweiter Lauf direkt danach muss die unveränderten Stufen überspringen; am Ende muss
       `src/contract_check.py` mit 0 Fehlern bestehen.
+- [ ] **Data Contract CLI final testen:** realen Impala-Host in
+      `docs/data_contract.yaml` setzen, `DATACONTRACT_IMPALA_*` in `.env`
+      pflegen und `datacontract lint` + `datacontract test --server production`
+      ausführen. Aktueller Befund: `lint` und `import sql` funktionieren;
+      `test` scheitert lokal am CLI-Impala-Transport (`TSocket read 0 bytes`),
+      nicht am Contract.
 - [ ] **Abgabe-Hygiene klären (Team):** bleiben `docs/coursematerial/` (13 MB Prof-Folien),
       `reference/` und diese `TODO.md` im Abgabe-Repo?
 
@@ -17,13 +23,12 @@ Benutzung/Überblick: [README.md](README.md) · Konsumenten-Sicht: [docs/data_co
 - [x] Data Contract technisch enforced: `src/contract_check.py` prüft Schema,
       `required`, einfache Eindeutigkeit und ausführbare `quality`-SQLs live gegen Impala;
       `src/run_pipeline.py` ruft den Check als Stage 4/4 auf.
-- [x] Isolierter Contract-Check getestet: 31 Checks OK, 0 fehlgeschlagen.
+- [x] Data Contract CLI berücksichtigt: `docs/output_port_ddl.sql` als SQL-Basis
+      für `datacontract import sql`; README enthält `lint`, `import sql` und
+      `test`-Befehle.
+- [x] Isolierter Contract-Check getestet: 32 Checks OK, 0 fehlgeschlagen.
 - [ ] Optional härten: weitere ausführbare `quality`-SQLs ergänzen, z.B. Row-Count-Minima,
       FK-Integrität und Composite-Key-Checks für `fact_bevoelkerung` und `fact_klima`.
-- [ ] Optional, falls explizit Data Contract CLI verlangt wird: `datacontract lint` ist
-      kompatibel; für `datacontract test` müssten zusätzlich `datacontract-cli[impala]`,
-      `DATACONTRACT_IMPALA_*`-Variablen und die Impala-Serverdetails im Contract gepflegt werden.
-      Für die Abgabe ist das eigene `contract_check.py`-Gate pragmatischer und bereits lauffähig.
 
 ## Fachliche Verbesserungen (wenn Zeit)
 
@@ -41,7 +46,7 @@ Benutzung/Überblick: [README.md](README.md) · Konsumenten-Sicht: [docs/data_co
       Data Contract + technisches Gate → ehrliche Grenzen.
 - [ ] Fragerunde üben: negative Scores (z-Score, gewollt), warum Impala-SQL in
       Stufe 1+2, warum kein UPDATE/MERGE in Impala (append-only State), NULL-Semantik,
-      warum eigenes Contract-Gate statt Data Contract CLI.
+      warum Data Contract CLI als Abgabe-Contract plus eigenes Pipeline-Gate.
 
 ## Erledigt (Auszug)
 

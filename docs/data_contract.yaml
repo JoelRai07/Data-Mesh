@@ -40,12 +40,15 @@ info:
 servers:
   production:
     type: impala
+    host: dein-impala-host.example.com
+    port: 443
     description: |
       Cloudera CDP / Impala der DHBW Stuttgart. Host, Port und HTTP-Pfad wie in
       .env.example dokumentiert; Authentifizierung per persoenlichem
       Workload-User (LDAP) aus dem Cloudera-Portal. Zugriff nur aus dem
       DHBW-Kontext.
     database: gruppe3
+    http_path: cliservice
 
 terms:
   usage: |

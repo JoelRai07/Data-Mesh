@@ -18,7 +18,7 @@ Die vier abgegebenen Arbeitsergebnisse:
 |---|---|
 | 1. DDLs + Begründung des Datenmodells | [src/create_datamodel.py](src/create_datamodel.py) + [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md) |
 | 2. Pipeline-Code (3 Stufen + Orchestrator + Incremental-State) + Scheduler | [src/run_pipeline.py](src/run_pipeline.py), [src/pipeline_default_to_staging.py](src/pipeline_default_to_staging.py), [src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py), [src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py), [src/etl_state.py](src/etl_state.py), [src/scheduler.py](src/scheduler.py) |
-| 3. Data Contract + technische Durchsetzung | [docs/data_contract.yaml](docs/data_contract.yaml), [src/contract_check.py](src/contract_check.py) |
+| 3. Data Contract + technische Durchsetzung | [docs/data_contract.yaml](docs/data_contract.yaml), [docs/output_port_ddl.sql](docs/output_port_ddl.sql), [src/contract_check.py](src/contract_check.py) |
 | 4. README (dieses Dokument) | – |
 
 ## Architektur: der Datenfluss
@@ -46,7 +46,9 @@ gruppe3_dim_* / gruppe3_fact_*   (das Datenprodukt, s. Data Contract)
       │
       │  (4) contract_check.py                   GATE    – impyla / Data Contract
       ▼       Schema, Pflichtfelder, Eindeutigkeit und ausführbare Quality-SQLs;
-              bricht den Lauf mit Exit-Code 1 ab, wenn der Contract verletzt ist
+              bricht den Lauf mit Exit-Code 1 ab, wenn der Contract verletzt ist.
+              Der benotete Contract selbst ist CLI-kompatibel:
+              docs/data_contract.yaml + docs/output_port_ddl.sql.
 ```
 
 **[src/run_pipeline.py](src/run_pipeline.py)** führt alles in fester Reihenfolge
@@ -109,6 +111,7 @@ Data-Mesh/
 └── docs/
     ├── Portfolioprüfung.pdf         # Aufgabenstellung
     ├── data_contract.yaml           # DELIVERABLE 3: Data Contract (Schema, Nutzung, Qualität)
+    ├── output_port_ddl.sql          # SQL-Basis für datacontract import sql
     ├── datenmodell_begruendung.md   # DELIVERABLE 1: Begründung des Datenmodells
     ├── entscheidungen.md            # Architektur-Entscheidungen (ADRs): aktiv + abgelöst + gelöste Probleme
     ├── spark_stolpersteine.md       # Spark-/JDBC-Probleme + Lösungen (Nachschlagewerk)
@@ -144,11 +147,14 @@ Modul-Docstring am Dateianfang; tiefergehende Analysen liegen in `docs/`):
    Stufe 3 (Spark): pro Zieltabelle eine `build_…()`-Funktion, `main()` führt
    sie in Abhängigkeits-Reihenfolge aus (erst Dimensionen, dann Basis-Fakten,
    zuletzt der aggregierte KPI-Fakt).
-8. **[src/contract_check.py](src/contract_check.py)** – technisches Publish-Gate:
-   prüft `docs/data_contract.yaml` live gegen Impala (Schema, `required`,
-   Eindeutigkeit, ausführbare `quality`-SQLs) und bricht bei Verstoß mit
-   Exit-Code 1 ab.
-9. **[src/scheduler.py](src/scheduler.py)** – täglicher Batch-Trigger um 00:00.
+8. **[docs/data_contract.yaml](docs/data_contract.yaml)** – der eigentliche
+   Data Contract für den Output Port, kompatibel mit der Data Contract CLI.
+   **[docs/output_port_ddl.sql](docs/output_port_ddl.sql)** ist die SQL-Basis,
+   aus der der Contract per CLI generiert bzw. abgeglichen werden kann.
+9. **[src/contract_check.py](src/contract_check.py)** – zusätzliches lokales
+   Publish-Gate: prüft denselben Contract live gegen Impala und bricht bei
+   Verstoß mit Exit-Code 1 ab.
+10. **[src/scheduler.py](src/scheduler.py)** – täglicher Batch-Trigger um 00:00.
 
 ## Einrichtung (einmalig)
 
@@ -212,6 +218,38 @@ und NULL-Semantik stehen im **[Data Contract](docs/data_contract.yaml)**.
 Der letzte Schritt des Komplettlaufs erzwingt diesen Contract technisch:
 `src/contract_check.py` liest das YAML als Quelle der Wahrheit und prüft das
 veröffentlichte Datenprodukt live in Impala.
+
+### Data Contract CLI
+
+Der benotete Data Contract ist `docs/data_contract.yaml`. Die zusätzliche Datei
+`docs/output_port_ddl.sql` dokumentiert das physische Output-Port-Schema und
+kann mit der Data Contract CLI als Generierungsbasis genutzt werden:
+
+```bash
+python -m pip install "datacontract-cli[impala]" packaging
+
+# Syntax/Schema des Contracts prüfen
+$env:PYTHONIOENCODING="utf-8"; datacontract lint docs/data_contract.yaml
+
+# Contract aus den SQL-DDLs neu generieren/gegenprüfen (Spark-Dialekt ist für STRING/INT/BIGINT/DOUBLE passend)
+datacontract import sql --source docs/output_port_ddl.sql --dialect spark --output docs/data_contract.generated.yaml
+
+# Contract gegen den Impala-Output-Port testen
+# Vorher in .env pflegen: DATACONTRACT_IMPALA_USERNAME, DATACONTRACT_IMPALA_PASSWORD,
+# DATACONTRACT_IMPALA_USE_SSL sowie im Contract host/port/database.
+$env:PYTHONIOENCODING="utf-8"; datacontract test --server production docs/data_contract.yaml
+```
+
+Falls `datacontract test` in der DHBW-Umgebung mit `TSocket read 0 bytes`
+abbricht, liegt das am Impala-Transport der CLI: die Pipeline nutzt
+`IMPALA_HTTP_PATH`/HTTP-Transport über `impyla`, der getestete CLI-Adapter nutzt
+dagegen nur `host`, `port`, `database`, Username und Passwort. In diesem Fall
+bleiben `datacontract lint` und `datacontract import sql` gültig; der Live-Gate
+gegen den konkreten DHBW-Output-Port läuft über `src/contract_check.py`.
+
+Hinweis: `src/contract_check.py` ist kein Ersatz fuer die Data Contract CLI,
+sondern ein zusätzlicher Pipeline-Gate, weil die Pipeline bereits über `impyla`
+gegen dieselbe Impala-Umgebung läuft.
 
 ## Docker
 
