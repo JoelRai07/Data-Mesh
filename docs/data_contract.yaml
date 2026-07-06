@@ -28,7 +28,10 @@ info:
       -> gruppe3_audit_*   (bereinigt: Encoding-Korrekturen, Transliteration,
                             Koordinaten-Normalisierung, Filter Germany)
       -> gruppe3_dim_* / gruppe3_fact_* (dieses Datenprodukt).
-    Write-Audit-Publish-Pattern; Details: README.md und docs/datenmodell_begruendung.md.
+    Write-Audit-Publish-Pattern mit Incremental Loading (Wasserzeichen fuer
+    Klimadaten, zeilengenauer Business-Key-Merge fuer Bauland/Bevoelkerung,
+    Inhalts-Pruefsummen sonst; das Star-Schema wird bei Aenderungen komplett
+    neu berechnet). Details: README.md und docs/datenmodell_begruendung.md.
   owner: Gruppe 3 (DHBW Stuttgart, Data Mesh & Data Engineering)
   contact:
     name: Gruppe 3
@@ -56,10 +59,12 @@ terms:
       vergeben: nur innerhalb EINES Datenstands joinen, niemals extern
       persistieren.
   limitations: |
-    - Snapshot-Produkt (Full Load): jeder Pipeline-Lauf ersetzt alle Tabellen
-      vollstaendig; es gibt keine Historisierung von Laufstaenden.
-    - Waehrend eines laufenden Pipeline-Laufs koennen Tabellen kurzzeitig leer
-      oder teilbefuellt sein (TRUNCATE + INSERT, s. README "Offene Punkte").
+    - Snapshot-Produkt: die dim_-/fact_-Tabellen werden bei geaenderten
+      Quellen komplett neu berechnet; es gibt keine Historisierung von
+      Laufstaenden.
+    - Waehrend eines laufenden Rebuilds koennen die dim_-/fact_-Tabellen
+      kurzzeitig leer oder teilbefuellt sein (TRUNCATE + INSERT,
+      s. README "Offene Punkte").
     - Klimadaten enden 2013 (Quelle Berkeley Earth): KPI-Werte ab 2014
       behandeln den Klima-Term neutral (0), s. fact_standortprofil_kpi.
     - Keine personenbezogenen Daten: ausschliesslich aggregierte amtliche
@@ -69,13 +74,15 @@ terms:
 servicelevels:
   freshness:
     description: |
-      Batch, taeglich 00:00 Europe/Berlin per Scheduler (src/scheduler.py),
-      Full-Load ueber alle drei Pipeline-Stufen. Quelldaten sind statische
-      Kursdaten - Aktualitaet ist daher durch die Quellen begrenzt.
+      Batch, taeglich 00:00 Europe/Berlin per Scheduler (src/scheduler.py).
+      Die Pipeline laedt inkrementell (Wasserzeichen/Pruefsummen, s.
+      src/etl_state.py) und ueberspringt unveraenderte Quellen; das
+      Star-Schema wird nur bei Aenderungen neu berechnet. Quelldaten sind
+      statische Kursdaten - Aktualitaet ist daher durch die Quellen begrenzt.
   availability:
     description: Best effort (DHBW-Lernumgebung, keine Produktions-SLA).
   retention:
-    description: Nur der jeweils letzte erfolgreiche Ladelauf (Full Load).
+    description: Nur der jeweils aktuelle Datenstand; keine historisierten Laufstaende.
   support:
     description: Gruppe 3, waehrend der Vorlesungszeit des Kurses.
 
