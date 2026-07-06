@@ -94,8 +94,8 @@ Die Zerstörung ist **nur in der `gruppe3`-Kopie** passiert. Die Original-Tabell
 korrekten Format `9,43751` / `54,78252` (10.949 von 10.950 in Zahlen wandelbar,
 live geprüft). Fix in `build_dim_gemeinde` und `build_fact_gemeinde_stamm`:
 
-- Quelle: `read_table(spark, "default.project_gemeinden")` statt der kaputten
-  `gruppe3_project_gemeinden`.
+- Quelle damals: intakte Rohdaten aus `default.project_gemeinden` statt einer
+  fehlerhaften alten Kopie in der Gruppen-Datenbank.
 - Koordinaten parsen: `regexp_replace(col, ",", ".").cast("double")`
   (deutsches Dezimalkomma → Punkt).
 

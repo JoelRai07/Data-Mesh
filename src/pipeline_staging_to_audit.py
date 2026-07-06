@@ -65,8 +65,8 @@ WARUM REINES IMPALA-SQL STATT SPARK:
   pipeline_default_to_staging.py).
 
 WARUM DIE SPALTENLISTE PER DESCRIBE ERMITTELT WIRD (statt hart codiert):
-  gruppe3_staging_bevoelkerungzahlen hat 83 Spalten (id, kreis + 3 Spalten x
-  27 Jahre). Alle Spalten von Hand aufzulisten waere fehleranfaellig - stattdessen
+  gruppe3_staging_bevoelkerungzahlen hat 92 Spalten (id, kreis + 3 Spalten x
+  30 Jahre). Alle Spalten von Hand aufzulisten waere fehleranfaellig - stattdessen
   wird die Spaltenliste der Quelltabelle per DESCRIBE gelesen und nur die
   Spalten mit Bereinigungsregel durch einen SQL-Ausdruck ersetzt, alle anderen
   Spalten bleiben ein einfacher Spaltenname.
@@ -447,10 +447,20 @@ def audit_table_incremental(cur, name, staging_table, audit_table_name, select_l
                 f"INSERT INTO {audit_table_name} SELECT {select_list} FROM {staging_table}{where_clause}"
             )
 
-    cur.execute(f"SELECT MAX({TIME_SERIES_WATERMARK_COLUMN}) FROM {staging_table}")
-    new_watermark = cur.fetchone()[0]
-    if new_watermark is not None:
-        record_state(cur, "audit", name, watermark_value=new_watermark)
+    # Wasserzeichen NUR bei tatsaechlicher Verarbeitung fortschreiben. Hier
+    # doppelt wichtig: should_skip_target_build() in pipeline_audit_to_target.py
+    # vergleicht das recorded_at der Audit-Eintraege mit dem letzten
+    # Ziel-Build - ein Eintrag pro unveraendertem Lauf wuerde den teuren
+    # Spark-Rebuild jedes Mal faelschlich ausloesen, der Skip wuerde nie
+    # greifen. Bei changed=False bleibt der letzte Eintrag der gueltige
+    # Stand; neue, aber fachlich irrelevante Staging-Zeilen (z.B. neue
+    # Messtage ausserhalb Deutschlands) werden beim naechsten Lauf einfach
+    # erneut guenstig per COUNT geprueft.
+    if changed:
+        cur.execute(f"SELECT MAX({TIME_SERIES_WATERMARK_COLUMN}) FROM {staging_table}")
+        new_watermark = cur.fetchone()[0]
+        if new_watermark is not None:
+            record_state(cur, "audit", name, watermark_value=new_watermark)
 
     cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
     return cur.fetchone()[0], changed

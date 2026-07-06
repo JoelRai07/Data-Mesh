@@ -36,7 +36,7 @@ src/etl_state.py):
      gemeldete Jahre revidiert (Destatis-Praxis) - ein reines
      "jahr > Wasserzeichen"-Append wuerde solche Korrekturen an bereits
      geladenen Jahren stillschweigend verpassen. project_bevoelkerungzahlen
-     (1 Zeile/Kreis, Jahre als 83 Spalten) und project_gemeinden (Stammdaten,
+     (1 Zeile/Kreis, Jahre als 92 Spalten) und project_gemeinden (Stammdaten,
      kein Zeitbezug) haben ueberhaupt keine Zeilen-Ebene, auf der "neu vs.
      alt" definierbar waere. Fuer alle drei gibt es also KEINEN verlaesslichen
      Aenderungsindikator auf Zeilenebene. Pragmatische, ehrliche Loesung:
@@ -55,7 +55,7 @@ WARUM REINES IMPALA-SQL STATT SPARK (anders als pipeline_audit_to_target.py)?
   bei 8,6 Mio. Zeilen in project_klimadaten).
 
 WARUM "CREATE TABLE ... LIKE ..." STATT MANUELLER SPALTENLISTE?
-  default.project_bevoelkerungzahlen hat 83 Spalten (id, kreis, + 3 Spalten
+  default.project_bevoelkerungzahlen hat 92 Spalten (id, kreis, + 3 Spalten
   x 30 Jahre) - von Hand abzutippen waere fehleranfaellig. LIKE uebernimmt
   Spaltennamen/-typen 1:1 von der Quelltabelle, garantiert also exakt
   dasselbe Schema.
@@ -121,12 +121,17 @@ def stage_table_incremental(cur, source_table, staging_table, watermark_column):
             )
             changed = True
 
-    # Wasserzeichen unabhaengig von "changed" auf den aktuellen Quellstand
-    # ziehen (falls z.B. der allererste Lauf schon 0 Zeilen zurueckliefert).
-    cur.execute(f"SELECT MAX({watermark_column}) FROM {source_fqn}")
-    new_watermark = cur.fetchone()[0]
-    if new_watermark is not None:
-        record_state(cur, "staging", source_table, watermark_value=new_watermark)
+    # Wasserzeichen NUR bei tatsaechlicher Verarbeitung fortschreiben:
+    # record_state haengt append-only einen Eintrag mit frischem recorded_at
+    # an (s. etl_state.py) - ein Eintrag pro unveraendertem Lauf wuerde die
+    # State-Tabelle unnoetig wachsen lassen und "zuletzt verarbeitet"
+    # verfaelschen. Bei changed=False bleibt der bisherige Eintrag korrekt
+    # der aktuelle Stand.
+    if changed:
+        cur.execute(f"SELECT MAX({watermark_column}) FROM {source_fqn}")
+        new_watermark = cur.fetchone()[0]
+        if new_watermark is not None:
+            record_state(cur, "staging", source_table, watermark_value=new_watermark)
 
     cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
     return cur.fetchone()[0], changed

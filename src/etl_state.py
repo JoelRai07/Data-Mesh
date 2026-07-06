@@ -123,7 +123,7 @@ def content_signature(cur, table_name, columns):
 
     Rein serverseitig in Impala berechnet (FNV_HASH je Zeile, SUM() als
     Aggregat) - kein Herunterladen der Daten noetig, auch fuer breite
-    Tabellen wie bevoelkerungzahlen (83 Spalten) unproblematisch, da die
+    Tabellen wie bevoelkerungzahlen (92 Spalten) unproblematisch, da die
     Spaltenliste wie in pipeline_staging_to_audit.py per DESCRIBE ermittelt wird.
 
     KEIN kryptographischer Hash, sondern reine Change-Detection: Ziel ist

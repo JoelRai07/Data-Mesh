@@ -338,7 +338,7 @@ models:
 
   gruppe3_fact_gemeinde_stamm:
     description: >
-      Gemeinde-Stammdaten als Snapshot ohne Zeitbezug (10.950 Zeilen) -
+      Gemeinde-Stammdaten als Snapshot ohne Zeitbezug (10.947 Zeilen) -
       die Quelle project_gemeinden hat keine Zeitreihe.
     fields:
       gemeinde_id:
@@ -365,11 +365,19 @@ models:
         type: double
         description: KPI Bevoelkerungsdichte (selbst berechnet aus total/area).
     quality:
+      - type: sql
+        description: Kein gemeinde_id doppelt (Snapshot-Korn).
+        query: |
+          SELECT COUNT(*) FROM (
+            SELECT gemeinde_id FROM gruppe3_fact_gemeinde_stamm
+            GROUP BY gemeinde_id HAVING COUNT(*) > 1
+          ) t
+        mustBe: 0
       - type: text
         description: >
-          Bekannte Einschraenkung (Stand 2026-07-06): 3 gemeinde_id kommen
-          doppelt vor (Duplikate mit gleichem Namen+PLZ in der Quelle) -
-          bei Aggregationen ggf. vorher deduplizieren; Fix ist geplant.
+          Quell-Duplikate mit gleichem Namen+PLZ werden vor dem Join gegen
+          dim_gemeinde dedupliziert, damit der Snapshot genau eine Zeile je
+          gemeinde_id enthaelt (Stand 2026-07-06).
 
   # ---------------------------------------------------------------------------
   # AGGREGIERTER KPI-FAKT (das "Dashboard-fertige" Herzstueck)

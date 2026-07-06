@@ -1,6 +1,15 @@
 """
-DELIVERABLE 2b: Scheduler - fuehrt die Spark-Pipeline (pipeline_audit_to_target.py) als
-taeglichen Batch-Job um 00:00 Uhr aus.
+DELIVERABLE 2b: Scheduler - fuehrt die komplette Pipeline (run_pipeline.py:
+Datenmodell + Stufe 1 -> 2 -> 3) als taeglichen Batch-Job um 00:00 Uhr aus.
+
+WARUM DER GANZE run_pipeline-LAUF UND NICHT NUR STUFE 3?
+  Stufe 3 prueft per should_skip_target_build(), ob sich seit dem letzten
+  Ziel-Build eine Audit-Tabelle geaendert hat. Wuerde der Scheduler nur
+  Stufe 3 starten, liefen die Stufen 1+2 nie - es gaebe nie neue Audit-
+  Staende, der Skip-Check wuerde jede Nacht greifen und die Pipeline wuerde
+  faktisch dauerhaft nichts tun. Der Komplettlauf ist dank Incremental
+  Loading trotzdem billig: unveraenderte Quellen werden erkannt und
+  uebersprungen (s. src/etl_state.py).
 
 Warum APScheduler statt z.B. Windows Task Scheduler / cron?
   - Scheduler-Code soll laut Aufgabenstellung Teil der Abgabe sein (im Repo
@@ -31,7 +40,7 @@ WARUM JAVA_HOME HIER GESETZT WIRD:
 
 Funktionsweise:
   - Dieses Skript startet einen Dauerlauf-Prozess (blockiert den Thread).
-  - Jeden Tag um 00:00 Uhr wird pipeline_audit_to_target.main() aufgerufen.
+  - Jeden Tag um 00:00 Uhr wird run_pipeline.main() aufgerufen.
   - Schlaegt ein Lauf fehl (z.B. Impala kurzzeitig nicht erreichbar), wird der
     Fehler geloggt, der Scheduler selbst laeuft aber weiter und versucht es
     am naechsten Tag erneut - ein einzelner Fehlschlag soll nicht den ganzen
@@ -61,7 +70,7 @@ if JAVA_HOME and os.path.isdir(JAVA_HOME):
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-import pipeline_audit_to_target
+import run_pipeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,7 +85,7 @@ def run_pipeline_job():
     damit ein fehlgeschlagener Lauf den Scheduler nicht crasht."""
     logger.info("Starte geplanten Pipeline-Lauf ...")
     try:
-        pipeline_audit_to_target.main()
+        run_pipeline.main()
         logger.info("Pipeline-Lauf erfolgreich abgeschlossen.")
     except Exception:
         # bewusst breites except: der Scheduler-Prozess soll auch nach einem
@@ -87,15 +96,15 @@ def run_pipeline_job():
 
 def main():
     scheduler = BlockingScheduler(timezone="Europe/Berlin")
-    # TEST-KONFIGURATION: laeuft aktuell jede Minute, um den Job ohne langes
-    # Warten beobachten zu koennen. Fuer die Abgabe zurueck auf
-    # CronTrigger(hour=0, minute=0) (taeglich um Mitternacht) stellen.
-    trigger = CronTrigger(minute="*")
+    # Taeglich um 00:00 Uhr (Europe/Berlin), wie in der Aufgabenstellung
+    # gefordert. Zum manuellen Testen ohne Wartezeit: run_pipeline.py direkt
+    # ausfuehren (gleicher Codepfad) statt hier den Trigger zu verstellen.
+    trigger = CronTrigger(hour=0, minute=0)
     scheduler.add_job(
         run_pipeline_job,
         trigger=trigger,
         id="daily_pipeline_run",
-        name="Pipeline-Lauf (Testmodus: jede Minute)",
+        name="Taeglicher Pipeline-Lauf (00:00 Uhr)",
         misfire_grace_time=3600,  # bis zu 1h Verspaetung (z.B. nach Rechner-Standby) noch nachholen
     )
 

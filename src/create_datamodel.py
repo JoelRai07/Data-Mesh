@@ -11,7 +11,7 @@ Eigenschaften (s. Begruendung in docs/datenmodell_begruendung.md):
   - Star-Schema (denormalisiert) -> wenige Joins, gut fuer OLAP/Analytik
   - dim_gemeinde ist die Bruecke zwischen Kreis-Ebene (Bevoelkerung/Bauland)
     und Stadt-Ebene (Klima): Kreis-Zuordnung per Namens-Match, Klimastadt-
-    Zuordnung per raeumlicher Naehe (latitude/longitude)
+    Zuordnung ebenfalls per Namens-Match nach Transliteration/Exonym-Mapping
   - fact_standortprofil_kpi ist eine aggregierte Cross-Table-Faktentabelle,
     die Bevoelkerung + Bauland + Klima + Gemeinde-Stammdaten zu KPIs verdichtet
   - STORED AS PARQUET -> spaltenorientiert, ideal fuer analytische Abfragen
@@ -66,7 +66,8 @@ STORED AS PARQUET
 
 # dim_gemeinde: Bruecken-Dimension zwischen Kreis-Ebene und Klimastadt-Ebene.
 # kreis_id wird per Namens-Match (district_kreis -> dim_kreis.kreis_name) aufgeloest.
-# latitude/longitude dienen als Matching-Schluessel zu dim_klimastadt (naechste Stadt).
+# latitude/longitude bleiben als beschreibende Geokoordinaten erhalten; die
+# Klima-Anbindung laeuft inzwischen per Namens-Match, nicht per Distanz-Join.
 create_dim_gemeinde = f"""
 CREATE TABLE IF NOT EXISTS {DIM_GEMEINDE} (
     gemeinde_id      STRING COMMENT 'Surrogat-Schluessel (PK), da Quelle keinen Schluessel hat',
@@ -74,8 +75,8 @@ CREATE TABLE IF NOT EXISTS {DIM_GEMEINDE} (
     kreis_id         STRING COMMENT 'FK -> dim_kreis.kreis_id, aufgeloest per Namens-Match',
     bundesland_name  STRING COMMENT 'Name des Bundeslandes',
     postal_code      STRING COMMENT 'Postleitzahl',
-    latitude         DOUBLE COMMENT 'Breitengrad, fuer Naeherungs-Match zu dim_klimastadt',
-    longitude        DOUBLE COMMENT 'Laengengrad, fuer Naeherungs-Match zu dim_klimastadt'
+    latitude         DOUBLE COMMENT 'Breitengrad',
+    longitude        DOUBLE COMMENT 'Laengengrad'
 )
 STORED AS PARQUET
 """

@@ -5,3 +5,7 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Proprietaerer Cloudera-JDBC-Treiber (12 MB, Lizenz erlaubt keine
+# Weiterverteilung) - muss lokal unter src/utils/ liegen, s. README
+src/utils/ImpalaJDBC42.jar

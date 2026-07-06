@@ -18,7 +18,7 @@ Die vier abgegebenen Arbeitsergebnisse:
 |---|---|
 | 1. DDLs + Begründung des Datenmodells | [src/create_datamodel.py](src/create_datamodel.py) + [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md) |
 | 2. Pipeline-Code (3 Stufen + Orchestrator + Incremental-State) + Scheduler | [src/run_pipeline.py](src/run_pipeline.py), [src/pipeline_default_to_staging.py](src/pipeline_default_to_staging.py), [src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py), [src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py), [src/etl_state.py](src/etl_state.py), [src/scheduler.py](src/scheduler.py) |
-| 3. Data Contract | [docs/data_contract.yaml](docs/data_contract.yaml) |
+| 3. Data Contract + technische Durchsetzung | [docs/data_contract.yaml](docs/data_contract.yaml), [src/contract_check.py](src/contract_check.py) |
 | 4. README (dieses Dokument) | – |
 
 ## Architektur: der Datenfluss
@@ -43,11 +43,15 @@ gruppe3_audit_*            (bereinigte, fachlich saubere Basis)
               der komplette Spark-Lauf wird übersprungen, wenn sich seit dem
               letzten Ziel-Build keine Audit-Tabelle geändert hat
 gruppe3_dim_* / gruppe3_fact_*   (das Datenprodukt, s. Data Contract)
+      │
+      │  (4) contract_check.py                   GATE    – impyla / Data Contract
+      ▼       Schema, Pflichtfelder, Eindeutigkeit und ausführbare Quality-SQLs;
+              bricht den Lauf mit Exit-Code 1 ab, wenn der Contract verletzt ist
 ```
 
 **[src/run_pipeline.py](src/run_pipeline.py)** führt alles in fester Reihenfolge
-aus (Datenmodell-DDLs + Stufen 1–3) und ist der eine Einstiegspunkt — auch im
-Docker-Image.
+aus (Datenmodell-DDLs + Stufen 1–3 + Data-Contract-Gate) und ist der eine
+Einstiegspunkt — auch im Docker-Image.
 
 **Warum Stufe 1+2 in Impala-SQL und nur Stufe 3 in Spark?** Kopieren und
 zeilenweises Bereinigen sind reine `INSERT OVERWRITE/INTO … SELECT`-Operationen —
@@ -77,7 +81,7 @@ jeweiligen Skripte.
 ```
 Data-Mesh/
 ├── README.md                        # Diese Datei
-├── requirements.txt                 # Python-Abhängigkeiten (impyla, pyspark, APScheduler, dotenv)
+├── requirements.txt                 # Python-Abhängigkeiten (impyla, pyspark, APScheduler, dotenv, PyYAML)
 ├── .env.example                     # Vorlage für Zugangsdaten → kopieren nach .env
 ├── .env                             # Echte Zugangsdaten (NICHT eingecheckt)
 ├── .gitignore / .dockerignore
@@ -87,17 +91,18 @@ Data-Mesh/
 ├── src/
 │   ├── db.py                        # Zentraler Impala-Verbindungs-Helfer (impyla + .env)
 │   ├── create_datamodel.py          # DELIVERABLE 1: DDLs Star-Schema (4 Dim + 5 Fakten), idempotent
-│   ├── run_pipeline.py              # DELIVERABLE 2: Orchestrator – Datenmodell + alle 3 Stufen in einem Lauf
+│   ├── run_pipeline.py              # DELIVERABLE 2: Orchestrator – Datenmodell + alle 3 Stufen + Contract-Gate
 │   ├── pipeline_default_to_staging.py   # Stufe 1: Rohdaten → Staging (inkrementell)
 │   ├── pipeline_staging_to_audit.py     # Stufe 2: Staging → Audit (Bereinigung, inkrementell)
 │   ├── pipeline_audit_to_target.py      # Stufe 3: Audit → Datenmodell (Spark, mit Skip-Check)
+│   ├── contract_check.py            # DELIVERABLE 3b: Data Contract als technisches Publish-Gate
 │   ├── etl_state.py                 # Incremental-Loading-Zustand (Wasserzeichen, Zeilen-Hashes)
 │   ├── scheduler.py                 # Täglicher Batch-Lauf um 00:00 (APScheduler)
 │   └── utils/
 │       ├── test_connection.py       # Prüft die Impala-Verbindung
 │       ├── inspect_tables.py        # Zeigt Schema + Zeilenzahl der Rohtabellen
 │       ├── reset_database.py        # Löscht ALLE gruppe3-Tabellen (Reset für End-to-End-Tests, fragt nach)
-│       └── ImpalaJDBC42.jar         # JDBC-Treiber für Spark (liegt im Repo, s. Einrichtung)
+│       └── ImpalaJDBC42.jar         # JDBC-Treiber für Spark (lokal bereitzustellen, s. Einrichtung)
 │
 ├── data/                            # Lokale CSV-Kopie zur Inspektion (nicht Teil der Pipeline)
 ├── reference/                       # Beispiel-Skripte aus der Vorlesung (nicht Teil der Abgabe)
@@ -139,7 +144,11 @@ Modul-Docstring am Dateianfang; tiefergehende Analysen liegen in `docs/`):
    Stufe 3 (Spark): pro Zieltabelle eine `build_…()`-Funktion, `main()` führt
    sie in Abhängigkeits-Reihenfolge aus (erst Dimensionen, dann Basis-Fakten,
    zuletzt der aggregierte KPI-Fakt).
-8. **[src/scheduler.py](src/scheduler.py)** – täglicher Batch-Trigger um 00:00.
+8. **[src/contract_check.py](src/contract_check.py)** – technisches Publish-Gate:
+   prüft `docs/data_contract.yaml` live gegen Impala (Schema, `required`,
+   Eindeutigkeit, ausführbare `quality`-SQLs) und bricht bei Verstoß mit
+   Exit-Code 1 ab.
+9. **[src/scheduler.py](src/scheduler.py)** – täglicher Batch-Trigger um 00:00.
 
 ## Einrichtung (einmalig)
 
@@ -157,9 +166,9 @@ python -m venv .venv
 - **JDK 17** installieren (genau Version 17, s.
   [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)); Pfad optional in
   `.env` als `JAVA_HOME_JDK17` eintragen.
-- **`src/utils/ImpalaJDBC42.jar`**: liegt aus Bequemlichkeit versioniert im
-  Repo, damit alles ohne Extra-Downloads läuft. Es ist der proprietäre
-  Cloudera-Treiber — das Repo deshalb nicht öffentlich weiterverteilen.
+- **`src/utils/ImpalaJDBC42.jar`**: proprietärer Cloudera-Treiber, deshalb
+  **nicht** eingecheckt (`.gitignore`) — die Datei muss lokal unter
+  `src/utils/` liegen (aus dem Cloudera-Portal laden bzw. im Team weitergeben).
 
 Die Stufen 1+2 einzeln und alle `utils/`-Skripte brauchen **kein** Java —
 nur Python + `.env`.
@@ -170,7 +179,7 @@ nur Python + `.env`.
 # Verbindung testen (optional)
 .venv/Scripts/python.exe src/utils/test_connection.py
 
-# KOMPLETTER LAUF (empfohlen): Datenmodell + Stufe 1 → 2 → 3
+# KOMPLETTER LAUF (empfohlen): Datenmodell + Stufe 1 → 2 → 3 + Contract-Gate
 .venv/Scripts/python.exe src/run_pipeline.py
 ```
 
@@ -186,17 +195,23 @@ Die Stufen lassen sich auch einzeln ausführen (gleiche Reihenfolge):
 .venv/Scripts/python.exe src/pipeline_default_to_staging.py     # Stufe 1
 .venv/Scripts/python.exe src/pipeline_staging_to_audit.py       # Stufe 2
 .venv/Scripts/python.exe src/pipeline_audit_to_target.py        # Stufe 3 (braucht JDK 17 + Treiber)
+.venv/Scripts/python.exe src/contract_check.py                  # Data-Contract-Gate gegen das Datenprodukt
 
-# Täglicher Lauf um 00:00 – läuft dauerhaft (s. offene Punkte)
+# Target-Rebuild erzwingen, wenn sich nur Code/Contract geändert hat, aber keine Audit-Daten
+$env:FORCE_TARGET_BUILD="1"; .venv/Scripts/python.exe src/pipeline_audit_to_target.py; Remove-Item Env:FORCE_TARGET_BUILD
+
+# Täglicher Lauf um 00:00 – läuft dauerhaft
 .venv/Scripts/python.exe src/scheduler.py
 
 # Kompletter Reset der gruppe3-Tabellen (z.B. um Full Load vs. Skip zu testen)
 .venv/Scripts/python.exe src/utils/reset_database.py
 ```
 
-Danach ist das Datenprodukt abfragbar — Beispiel-Queries und die genaue
-Bedeutung aller Spalten (inkl. NULL-Semantik) stehen im
-**[Data Contract](docs/data_contract.yaml)**.
+Danach ist das Datenprodukt abfragbar. Beispiel-Queries, Spaltenbedeutungen
+und NULL-Semantik stehen im **[Data Contract](docs/data_contract.yaml)**.
+Der letzte Schritt des Komplettlaufs erzwingt diesen Contract technisch:
+`src/contract_check.py` liest das YAML als Quelle der Wahrheit und prüft das
+veröffentlichte Datenprodukt live in Impala.
 
 ## Docker
 
@@ -244,7 +259,7 @@ dieselben Tabellen und kämen sich ins Gehege).
 | `gruppe3_dim_kreis` (472) | `gruppe3_fact_bevoelkerung` (14.110, 1995–2024) |
 | `gruppe3_dim_jahr` (30) | `gruppe3_fact_bauland` (4.720, 2015–2024) |
 | `gruppe3_dim_gemeinde` (10.947, Brücke Kreis↔Stadt) | `gruppe3_fact_klima` (1.539, 1995–2013) |
-| `gruppe3_dim_klimastadt` (81) | `gruppe3_fact_gemeinde_stamm` (10.950) |
+| `gruppe3_dim_klimastadt` (81) | `gruppe3_fact_gemeinde_stamm` (10.947) |
 |  | `gruppe3_fact_standortprofil_kpi` (4.099) — die dashboard-fertigen Cross-Table-KPIs |
 
 Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
@@ -268,36 +283,28 @@ Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
 
 - [x] Datenmodell (DDLs) + Begründung
 - [x] Pipeline (3 Stufen, WAP, inkrementell, idempotent) + Orchestrator + Scheduler
-- [x] Data Contract
+- [x] Data Contract + technische Durchsetzung als Publish-Gate
 - [ ] Restpunkte unten
 
 **Offene Arbeiten:**
 
-1. **Scheduler:** steht im Testmodus (`CronTrigger(minute="*")`) → vor Abgabe
-   auf `hour=0, minute=0`. Außerdem ruft er nur Stufe 3 auf — seit dem
-   Skip-Check würde er ohne frische Stufen 1+2 dauerhaft überspringen →
-   auf `run_pipeline.main()` umstellen.
-2. **Skip-Check greift im Komplettlauf nie:** `stage_table_incremental`/
-   `audit_table_incremental` schreiben ihr Wasserzeichen bei **jedem** Lauf
-   neu (auch ohne Änderung). Dadurch ist der Audit-Stand immer „jünger" als
-   der letzte Ziel-Build und `should_skip_target_build()` liefert nie True →
-   `record_state` nur bei tatsächlicher Änderung aufrufen.
-3. **[docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md)**
-   beschreibt die Klima-Anbindung noch als Koordinaten-Distanz-Join; der Code
-   nutzt inzwischen einen Namens-Join (74 von 81 Städten) → Doku angleichen.
+1. **End-to-End-Abnahmetest:** `utils/reset_database.py` → `run_pipeline.py` →
+   zweiter Lauf direkt danach muss überall „übersprungen" melden; dabei muss
+   `contract_check.py` am Ende mit 0 Fehlern bestehen.
+2. **Abgabe-Hygiene klären (Team):** bleiben `docs/coursematerial/` (13 MB
+   Prof-Folien), `reference/` und `TODO.md` im Abgabe-Repo?
+3. **Data-Contract-Härtung (optional):** weitere ausführbare `quality`-SQLs
+   ergänzen, z.B. Row-Count-Minima, FK-Integrität und Composite-Key-Checks für
+   `fact_bevoelkerung` und `fact_klima`. Der aktuelle Pflichtstand läuft und
+   prüft bereits Schema, Required-Felder, einfache Eindeutigkeit und die
+   vorhandenen SQL-Regeln.
 4. **`dim_kreis.kreis_name` mehrdeutig** (Stadt/Landkreis-Zusatz wurde bei der
    Bereinigung entfernt, z. B. dreimal „Leipzig") → Zusatz-Spalte `kreis_typ`
    oder Originalname ergänzen; bis dahin gilt: Joins nur über `kreis_id`
    (im Data Contract dokumentiert).
-5. **`fact_gemeinde_stamm`:** 3 doppelte `gemeinde_id` durch Quell-Duplikate →
-   Dedupe in `build_fact_gemeinde_stamm`.
-6. **`overwrite_table`** trunkiert die Zieltabelle, bevor Spark rechnet →
-   Reihenfolge tauschen (erst `collect()`, dann `TRUNCATE`), damit das
-   Konsistenz-Fenster minimal wird.
-7. Kosmetik: `WindowExec`-Warnung (Window ohne `PARTITION BY`, bei unserer
+5. Kosmetik: `WindowExec`-Warnung (Window ohne `PARTITION BY`, bei unserer
    Datenmenge unkritisch), log4j-`ClassCastException` des JDBC-Treibers
-   (harmlos, s. [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)),
-   Docstring-Angabe „83 Spalten" für die Bevölkerungstabelle (real: 92).
+   (harmlos, s. [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)).
 
 > **Warum ist alles so gebaut (und was galt früher)?** → [docs/entscheidungen.md](docs/entscheidungen.md) (ADRs + Problem-Historie)
 > Hintergrund & Prüfungsvorbereitung: [docs/projekt_notizen.md](docs/projekt_notizen.md)

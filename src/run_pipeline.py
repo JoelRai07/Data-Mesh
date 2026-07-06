@@ -32,28 +32,40 @@ import create_datamodel
 import pipeline_default_to_staging
 import pipeline_staging_to_audit
 import pipeline_audit_to_target
+import contract_check
 
 
 def main():
     print("=" * 60)
-    print("STUFE 0/3: Datenmodell (CREATE TABLE IF NOT EXISTS)")
+    print("STUFE 0/4: Datenmodell (CREATE TABLE IF NOT EXISTS)")
     print("=" * 60)
     create_datamodel.main()
 
     print("\n" + "=" * 60)
-    print("STUFE 1/3: source -> staging")
+    print("STUFE 1/4: source -> staging")
     print("=" * 60)
     pipeline_default_to_staging.main()
 
     print("\n" + "=" * 60)
-    print("STUFE 2/3: staging -> audit")
+    print("STUFE 2/4: staging -> audit")
     print("=" * 60)
     pipeline_staging_to_audit.main()
 
     print("\n" + "=" * 60)
-    print("STUFE 3/3: audit -> target")
+    print("STUFE 3/4: audit -> target")
     print("=" * 60)
     pipeline_audit_to_target.main()
+
+    # Publish-Gate: der Data Contract wird TECHNISCH DURCHGESETZT
+    # (Prof-Vorgabe). Verletzt der frisch veroeffentlichte Datenstand den
+    # Vertrag (Schema, Pflichtfelder, Eindeutigkeit, Quality-SQLs), bricht
+    # contract_check mit Exit-Code 1 ab - der Gesamtlauf schlaegt dann
+    # sichtbar fehl (s. "WARUM KEIN try/except" oben), statt still
+    # vertragswidrige Daten am Output-Port liegen zu lassen.
+    print("\n" + "=" * 60)
+    print("STUFE 4/4: Data Contract durchsetzen (Publish-Gate)")
+    print("=" * 60)
+    contract_check.main()
 
     print("\n" + "=" * 60)
     print("Gesamter Pipeline-Lauf abgeschlossen.")

@@ -118,7 +118,7 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 | Alt (galt früher) | Warum verworfen | Ersetzt durch |
 |---|---|---|
 | **Reine Impala-SQL-Pipeline** (`pipeline.py`, alles per impyla-SQL-Strings) | Prof will Spark/NiFi statt Skript-Code; `STDDEV` als Window-Funktion in Impala nicht möglich (z-Score!) | ADR-4/5 (Spark-Stufe 3) |
-| **Quelle `gruppe3_project_*`** (Kopien in der Gruppen-DB) | Koordinaten in der Kopie durch CSV-Bug zerstört (`latitude='13735"'`); Original `default.project_*` ist intakt | Stufe 1 liest `default.project_*` (ADR-3) |
+| **Alte Rohdaten-Kopien in der Gruppen-DB** | Koordinaten in der Kopie durch CSV-Bug zerstört (`latitude='13735"'`); Original `default.project_*` ist intakt | Stufe 1 liest `default.project_*` (ADR-3) |
 | **Koordinaten-Distanz-Join** Gemeinde→nächste Klimastadt | Scheiterte erst an zerstörten Koordinaten (P3); nach deren Fix bewusst beim einfacheren, deterministischen Namens-Join geblieben | ADR-7 |
 | **„Kaputte Zeichen einheitlich entfernen"** (`L�beck`→`Lbeck`) | Erzeugt falsche Namen, die nirgends mehr matchen; die Original-Schreibweisen sind ja bekannt | ADR-6 (Korrektur-Mappings) |
 | **`spark.jars`** zum Einbinden des JDBC-Treibers | Löst unter Windows den Hadoop-Kopierpfad aus → braucht `winutils.exe` (Crash) | `spark.driver/executor.extraClassPath` (Stolperstein 2) |

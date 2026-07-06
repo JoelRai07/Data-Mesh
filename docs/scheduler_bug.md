@@ -74,9 +74,10 @@ Scheduler kurz gestartet und Log-Ausgabe geprueft:
 Korrektes Datum (naechster Tag, 00:00 Uhr, Zeitzone Europe/Berlin), kein
 Absturz mehr.
 
-## Hinweis zum aktuellen Test-Zustand
+## Hinweis zum frueheren Test-Zustand
 
-`src/scheduler.py` steht aktuell testweise auf `CronTrigger(minute="*")`
-(laeuft jede Minute), um den Job-Ablauf ohne langes Warten beobachten zu
-koennen. **Vor der Abgabe zurueck auf `CronTrigger(hour=0, minute=0)`
-stellen** (taeglich um Mitternacht, wie in der Aufgabenstellung gefordert).
+`src/scheduler.py` stand waehrend der Entwicklung testweise auf
+`CronTrigger(minute="*")` (jede Minute), um den Job-Ablauf ohne langes Warten
+beobachten zu koennen. Fuer die Abgabe ist der Trigger wieder auf
+`CronTrigger(hour=0, minute=0)` gestellt (taeglich um Mitternacht, wie in der
+Aufgabenstellung gefordert).

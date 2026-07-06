@@ -67,6 +67,8 @@ JDBC_DRIVER_CLASS = "com.cloudera.impala.jdbc.Driver"  # verifiziert aus der Jar
 # Star-Schema speist (s. AUDIT_SOURCE_TABLES-Nutzung in should_skip_target_build).
 AUDIT_SOURCE_TABLES = ["bauland", "bevoelkerungzahlen", "gemeinden", "klimadaten"]
 
+TRUTHY_VALUES = {"1", "true", "yes", "y", "ja"}
+
 
 def safe_div(numerator, denominator):
     """
@@ -196,8 +198,9 @@ def _sql_literal(value):
 
 def overwrite_table(df, table_name, batch_size=500):
     """
-    Leert die Zieltabelle (truncate_table) und schreibt die Ergebniszeilen
-    dann per impyla als INSERT INTO ... VALUES (...)-Batches.
+    Sammelt die Ergebniszeilen ein, leert danach die Zieltabelle
+    (truncate_table) und schreibt per impyla als INSERT INTO ... VALUES
+    (...)-Batches.
 
     WARUM NICHT df.write.jdbc(...)?
     Probiert, schlaegt aber zuverlaessig fehl: der Impala-JDBC-Treiber kann
@@ -210,9 +213,9 @@ def overwrite_table(df, table_name, batch_size=500):
     von ein paar zehntausend Zeilen unproblematisch) und als reinen SQL-Text
     einfuegen, ganz ohne Parameter-Bindung.
     """
+    rows = df.collect()
     truncate_table(table_name)
 
-    rows = df.collect()
     if not rows:
         return
 
@@ -332,11 +335,11 @@ def build_dim_gemeinde(spark, dim_kreis):
 
     rn_window = Window.partitionBy(
         gem.municipality_name, gem.postal_code
-    ).orderBy(F.length(dim_kreis.kreis_name).desc())
+    ).orderBy(F.length(dim_kreis.kreis_name).desc_nulls_last())
 
     deduped = (
         joined.withColumn("rn", F.row_number().over(rn_window))
-        .filter((F.col("rn") == 1) | F.col("kreis_id").isNull())
+        .filter(F.col("rn") == 1)
     )
 
     gemeinde_id_window = Window.orderBy("municipality_name", "postal_code")
@@ -488,7 +491,18 @@ def build_fact_klima(spark):
 def build_fact_gemeinde_stamm(spark, dim_gemeinde):
     # Aus gruppe3_audit_gemeinden lesen (s. read_gemeinden); area_km2 kommt
     # als String und wird dort sicher in double gewandelt.
-    gem = read_gemeinden(spark).filter(F.col("area_km2").isNotNull())
+    dedupe_window = Window.partitionBy("municipality_name", "postal_code").orderBy(
+        F.col("district_kreis").asc_nulls_last(),
+        F.col("latitude").asc_nulls_last(),
+        F.col("longitude").asc_nulls_last(),
+    )
+    gem = (
+        read_gemeinden(spark)
+        .filter(F.col("area_km2").isNotNull())
+        .withColumn("rn", F.row_number().over(dedupe_window))
+        .filter(F.col("rn") == 1)
+        .drop("rn")
+    )
 
     joined = gem.join(
         dim_gemeinde,
@@ -568,7 +582,7 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     gemeinde_mit_kreis = dim_gemeinde.filter(F.col("kreis_id").isNotNull())
     klimastadt = build_dim_klimastadt(spark)
 
-    naechste_stadt = (
+    klimastadt_match = (
         gemeinde_mit_kreis.join(
             klimastadt,
             gemeinde_mit_kreis.gemeinde_name == klimastadt.stadt_name,
@@ -577,7 +591,7 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     )
 
     klima_je_kreis = (
-        naechste_stadt.join(fact_klima, "stadt_name")
+        klimastadt_match.join(fact_klima, "stadt_name")
         .groupBy("kreis_id", "jahr")
         .agg(F.avg("temperatur_abweichung_grad").alias("temperatur_abweichung_grad"))
     )
@@ -701,6 +715,11 @@ def should_skip_target_build(cur):
     return True
 
 
+def should_force_target_build():
+    """Erzwingt den Target-Rebuild bei Code-/Contract-Aenderungen ohne neue Audit-Daten."""
+    return os.getenv("FORCE_TARGET_BUILD", "").strip().lower() in TRUTHY_VALUES
+
+
 # ---------------------------------------------------------------------------
 # AUSFUEHRUNG
 # ---------------------------------------------------------------------------
@@ -710,13 +729,16 @@ def main():
     cur = conn.cursor()
     cur.execute(f"USE {DATABASE}")
     ensure_state_table(cur)
-    skip = should_skip_target_build(cur)
+    force = should_force_target_build()
+    skip = False if force else should_skip_target_build(cur)
     cur.close()
     conn.close()
 
     if skip:
         print("Keine Aenderung in den Audit-Tabellen seit dem letzten Ziel-Build - Spark-Lauf wird uebersprungen.")
         return
+    if force:
+        print("FORCE_TARGET_BUILD=1 gesetzt - Spark-Lauf wird trotz unveraenderter Audit-Tabellen ausgefuehrt.")
 
     spark = get_spark()
     spark.sparkContext.setLogLevel("WARN")
