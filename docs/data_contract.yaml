@@ -1,0 +1,467 @@
+# =============================================================================
+# DELIVERABLE 3: Data Contract
+#
+# Beschreibt das Datenprodukt "Standortprofil deutscher Kreise" (Datenbank
+# gruppe3): welche Tabellen es gibt, was die Spalten bedeuten, wie man das
+# Produkt korrekt konsumiert - und ehrlich gemessene Datenqualitaet
+# (alle Kennzahlen live gegen Impala gemessen, Stand: 2026-07-06).
+#
+# Format angelehnt an die Data Contract Specification (datacontract.com),
+# wie in der Vorlesung (entropy-data-Demo) gezeigt.
+# =============================================================================
+dataContractSpecification: 1.1.0
+id: urn:datacontract:gruppe3:standortprofil
+info:
+  title: Standortprofil deutscher Kreise
+  version: 1.0.0
+  status: active
+  description: |
+    Datenprodukt der Gruppe 3 (DHBW Stuttgart, Kurs "Data Mesh und Data
+    Engineering"). Verbindet vier amtliche/oeffentliche Quelldatensaetze
+    (Bevoelkerung, Baulandverkaeufe, Klimadaten, Gemeinde-Stammdaten) zu einem
+    analysefertigen Star-/Galaxy-Schema fuer den Use Case
+    "Standortprofil-Dashboard": Kreise vergleichbar machen hinsichtlich
+    Bevoelkerungsentwicklung, Bauland-/Wohnungsmarkt und Klimawandel-Exposition.
+
+    Herkunft (Lineage): default.project_* (Rohdaten, nur lesend)
+      -> gruppe3_staging_* (1:1-Kopie)
+      -> gruppe3_audit_*   (bereinigt: Encoding-Korrekturen, Transliteration,
+                            Koordinaten-Normalisierung, Filter Germany)
+      -> gruppe3_dim_* / gruppe3_fact_* (dieses Datenprodukt).
+    Write-Audit-Publish-Pattern; Details: README.md und docs/datenmodell_begruendung.md.
+  owner: Gruppe 3 (DHBW Stuttgart, Data Mesh & Data Engineering)
+  contact:
+    name: Gruppe 3
+    url: https://github.com/JoelRai07/Data-Mesh
+
+servers:
+  production:
+    type: impala
+    description: |
+      Cloudera CDP / Impala der DHBW Stuttgart. Host, Port und HTTP-Pfad wie in
+      .env.example dokumentiert; Authentifizierung per persoenlichem
+      Workload-User (LDAP) aus dem Cloudera-Portal. Zugriff nur aus dem
+      DHBW-Kontext.
+    database: gruppe3
+
+terms:
+  usage: |
+    - Analytische Nutzung: Dashboards, Berichte, Ad-hoc-SQL, Data Science.
+    - Joins IMMER ueber die Schluessel kreis_id (amtlicher Regionalschluessel),
+      gemeinde_id, stadt_name und jahr - NICHT ueber kreis_name
+      (kreis_name ist NICHT eindeutig, s. quality bei gruppe3_dim_kreis).
+    - Alle Textwerte sind ASCII-transliteriert (ae/oe/ue/ss): Konsumenten
+      muessen z.B. mit 'Muenchen' statt 'München' filtern.
+    - gemeinde_id ist ein Surrogat und wird bei jedem Pipeline-Lauf neu
+      vergeben: nur innerhalb EINES Datenstands joinen, niemals extern
+      persistieren.
+  limitations: |
+    - Snapshot-Produkt (Full Load): jeder Pipeline-Lauf ersetzt alle Tabellen
+      vollstaendig; es gibt keine Historisierung von Laufstaenden.
+    - Waehrend eines laufenden Pipeline-Laufs koennen Tabellen kurzzeitig leer
+      oder teilbefuellt sein (TRUNCATE + INSERT, s. README "Offene Punkte").
+    - Klimadaten enden 2013 (Quelle Berkeley Earth): KPI-Werte ab 2014
+      behandeln den Klima-Term neutral (0), s. fact_standortprofil_kpi.
+    - Keine personenbezogenen Daten: ausschliesslich aggregierte amtliche
+      Statistik auf Kreis-/Gemeindeebene.
+  noticePeriod: P1M
+
+servicelevels:
+  freshness:
+    description: |
+      Batch, taeglich 00:00 Europe/Berlin per Scheduler (src/scheduler.py),
+      Full-Load ueber alle drei Pipeline-Stufen. Quelldaten sind statische
+      Kursdaten - Aktualitaet ist daher durch die Quellen begrenzt.
+  availability:
+    description: Best effort (DHBW-Lernumgebung, keine Produktions-SLA).
+  retention:
+    description: Nur der jeweils letzte erfolgreiche Ladelauf (Full Load).
+  support:
+    description: Gruppe 3, waehrend der Vorlesungszeit des Kurses.
+
+models:
+  # ---------------------------------------------------------------------------
+  # DIMENSIONEN
+  # ---------------------------------------------------------------------------
+  gruppe3_dim_kreis:
+    description: >
+      Geografische Dimension auf Kreis-Ebene (472 Kreise/kreisfreie Staedte),
+      denormalisiert inkl. Bundesland. Enthaelt auch historische, inzwischen
+      aufgeloeste Kreise (Gebietsreformen), da die Fakten 1995-2024 abdecken.
+    fields:
+      kreis_id:
+        type: string
+        required: true
+        unique: true
+        primaryKey: true
+        description: Amtlicher Regionalschluessel, 5-stellig, z.B. '01001' (Flensburg).
+      kreis_name:
+        type: string
+        description: >
+          Kreisname OHNE Namenszusatz (Zusatz wie ', kreisfreie Stadt' wurde
+          bei der Bereinigung entfernt) - dadurch NICHT eindeutig!
+      bundesland_id:
+        type: string
+        description: Erste 2 Stellen des Regionalschluessels, z.B. '01'.
+      bundesland_name:
+        type: string
+        description: Bundesland, ASCII-transliteriert (z.B. Baden-Wuerttemberg).
+    quality:
+      - type: text
+        description: 472 Zeilen; kreis_id eindeutig und immer 5-stellig; bundesland_name immer gefuellt (Stand 2026-07-06).
+      - type: text
+        description: >
+          ACHTUNG: kreis_name ist mehrdeutig (30+ Namen mehrfach, z.B.
+          'Leipzig' 3x fuer 14365/14713/14729 = Stadt + Landkreis + Alt-Kreis).
+          Fuer Joins und Filter ausschliesslich kreis_id verwenden.
+
+  gruppe3_dim_jahr:
+    description: Zeit-Dimension.
+    fields:
+      jahr:
+        type: int
+        required: true
+        unique: true
+        primaryKey: true
+        description: Jahr, z.B. 2024.
+      jahrzehnt:
+        type: int
+        description: Jahrzehnt, z.B. 2020.
+    quality:
+      - type: text
+        description: 30 Zeilen, lueckenlos 1995-2024 (Stand 2026-07-06).
+
+  gruppe3_dim_gemeinde:
+    description: >
+      Bruecken-Dimension Gemeinde (10.947 Zeilen): verbindet die Kreis-Ebene
+      (Bevoelkerung/Bauland) mit der Stadt-Ebene der Klimadaten. Die
+      Kreis-Zuordnung erfolgt per Namens-Match und ist nicht vollstaendig.
+    fields:
+      gemeinde_id:
+        type: string
+        required: true
+        primaryKey: true
+        description: >
+          Surrogat-Schluessel (Quelle hat keinen amtlichen Schluessel).
+          Wird je Pipeline-Lauf NEU vergeben - nicht extern persistieren.
+      gemeinde_name:
+        type: string
+        description: Gemeindename, ASCII-transliteriert.
+      kreis_id:
+        type: string
+        required: false
+        references: gruppe3_dim_kreis.kreis_id
+        description: FK auf dim_kreis; NULL, wenn der Namens-Match fehlschlug.
+      bundesland_name:
+        type: string
+        description: Bundesland aus der Gemeinde-Quelle.
+      postal_code:
+        type: string
+        description: Postleitzahl.
+      latitude:
+        type: double
+        description: Breitengrad (Dezimalgrad).
+      longitude:
+        type: double
+        description: Laengengrad (Dezimalgrad).
+    quality:
+      - type: text
+        description: >
+          Kreis-Zuordnung: 10.675 von 10.947 Gemeinden haben eine kreis_id
+          (97,5 % Coverage, 272 ohne Zuordnung) - bei Joins auf dim_kreis
+          LEFT JOIN verwenden bzw. NULL-Faelle einplanen (Stand 2026-07-06).
+
+  gruppe3_dim_klimastadt:
+    description: >
+      Deutsche Staedte aus den Berkeley-Earth-Klimadaten (81 Staedte),
+      Namen ASCII-transliteriert und englische Exonyme auf deutsche
+      Schreibweise gemappt (Munich -> Muenchen).
+    fields:
+      stadt_name:
+        type: string
+        required: true
+        primaryKey: true
+        description: Stadtname (gefiltert auf country = Germany).
+      latitude:
+        type: double
+        description: Breitengrad (Dezimalgrad, aus Kompass-Format konvertiert).
+      longitude:
+        type: double
+        description: Laengengrad (Dezimalgrad, aus Kompass-Format konvertiert).
+    quality:
+      - type: text
+        description: >
+          81 Staedte; 74 davon lassen sich per Namens-Match einer Gemeinde in
+          dim_gemeinde zuordnen (Rest: mehrdeutige Kurznamen wie 'Frankfurt')
+          (Stand 2026-07-06).
+
+  # ---------------------------------------------------------------------------
+  # BASIS-FAKTEN
+  # ---------------------------------------------------------------------------
+  gruppe3_fact_bevoelkerung:
+    description: >
+      Einwohner je Kreis und Jahr (14.110 Zeilen, 1995-2024), entstanden durch
+      Unpivot der breiten Quelltabelle (92 Spalten -> 1 Zeile je Kreis+Jahr).
+    fields:
+      kreis_id:
+        type: string
+        required: true
+        references: gruppe3_dim_kreis.kreis_id
+        description: FK auf dim_kreis (zusammen mit jahr eindeutig).
+      jahr:
+        type: int
+        required: true
+        references: gruppe3_dim_jahr.jahr
+        description: FK auf dim_jahr.
+      einwohner_insgesamt:
+        type: bigint
+        required: true
+        description: Einwohner gesamt (amtlicher Wert).
+      einwohner_maennlich:
+        type: bigint
+        description: Einwohner maennlich.
+      einwohner_weiblich:
+        type: bigint
+        description: Einwohner weiblich.
+      geschlechterquotient:
+        type: double
+        description: KPI maennlich/weiblich; NULL wenn weiblich 0/unbekannt.
+      wachstum_vorjahr_pct:
+        type: double
+        description: >
+          KPI Veraenderung ggue. Vorjahr in Prozent; NULL im jeweils ersten
+          Jahr eines Kreises (kein Vorjahr vorhanden).
+    quality:
+      - type: text
+        description: >
+          14.110 Zeilen; einwohner_insgesamt zu 100 % gefuellt;
+          geschlechterquotient 12.762 (90,4 %); wachstum_vorjahr_pct 12.364
+          (87,6 %) - fehlende Werte sind fachlich begruendet, kein Fehler
+          (Stand 2026-07-06).
+
+  gruppe3_fact_bauland:
+    description: >
+      Baulandverkaeufe je Kreis und Jahr (4.720 Zeilen, 2015-2024), entstanden
+      durch Pivot der Quelltabelle (1 Zeile je Merkmal -> 1 Spalte je Merkmal).
+      Amtliche Geheimhaltung: kleine Kreise/Jahre sind teilweise unterdrueckt.
+    fields:
+      kreis_id:
+        type: string
+        required: true
+        references: gruppe3_dim_kreis.kreis_id
+        description: FK auf dim_kreis (zusammen mit jahr eindeutig).
+      jahr:
+        type: int
+        required: true
+        references: gruppe3_dim_jahr.jahr
+        description: FK auf dim_jahr.
+      anzahl_veraeusserungsfaelle:
+        type: bigint
+        description: Anzahl Veraeusserungsfaelle von Bauland (4.714 gefuellt).
+      veraeusserte_flaeche_1000qm:
+        type: bigint
+        description: >
+          Veraeusserte Flaeche in 1000 m2 (4.662 gefuellt). ACHTUNG: 748
+          Zeilen haben den Wert 0 (Flaechen < 500 m2 runden amtlich auf 0),
+          obwohl eine echte Kaufsumme vorliegt.
+      kaufsumme_tsd_eur:
+        type: bigint
+        description: Kaufsumme in Tsd. EUR (4.662 gefuellt).
+      kaufwert_je_qm_eur:
+        type: double
+        description: >
+          NICHT VERWENDEN. Der amtliche 'Durchschnittliche Kaufwert je qm'
+          wurde bereits beim Import der Rohdaten zerstoert (Dezimalwerte in
+          eine BIGINT-Spalte geladen): die Spalte enthaelt ausschliesslich
+          0 oder NULL - in der Quelle default.project_bauland genauso.
+          Ersatz: preis_pro_qm_eur (selbst berechnet).
+      preis_pro_qm_eur:
+        type: double
+        description: >
+          KPI kaufsumme/flaeche in EUR/m2 (3.912 gefuellt); NULL wenn
+          flaeche 0 oder unterdrueckt (Division durch 0 wird nicht berechnet).
+      anteil_baureif_pct:
+        type: double
+        description: KPI Anteil baureifes Land an der Flaeche (3.584 gefuellt).
+      durchschnittsfall_qm:
+        type: double
+        description: KPI mittlere Grundstuecksgroesse je Fall (3.914 gefuellt).
+    quality:
+      - type: sql
+        description: Kein Kreis+Jahr doppelt (Pivot-Korn).
+        query: |
+          SELECT COUNT(*) FROM (
+            SELECT kreis_id, jahr FROM gruppe3_fact_bauland
+            GROUP BY kreis_id, jahr HAVING COUNT(*) > 1
+          ) t
+        mustBe: 0
+      - type: text
+        description: >
+          NULL-Quoten (Stand 2026-07-06) stammen aus amtlicher Geheimhaltung
+          und der 1000-m2-Rundung; Details je Spalte s. Beschreibungen.
+
+  gruppe3_fact_klima:
+    description: >
+      Jahresmittel-Temperatur je deutscher Klimastadt (1.539 Zeilen,
+      81 Staedte, NUR 1995-2013 - die Quelle Berkeley Earth endet 2013).
+    fields:
+      stadt_name:
+        type: string
+        required: true
+        references: gruppe3_dim_klimastadt.stadt_name
+        description: FK auf dim_klimastadt (zusammen mit jahr eindeutig).
+      jahr:
+        type: int
+        required: true
+        references: gruppe3_dim_jahr.jahr
+        description: FK auf dim_jahr.
+      avg_temperatur:
+        type: double
+        description: Jahresmittel in Grad Celsius.
+      temperatur_abweichung_grad:
+        type: double
+        description: >
+          Abweichung vom langjaehrigen Referenzmittel derselben Stadt
+          (Referenzperiode 1961-1990, WMO-Standard) - Klimawandel-Indikator.
+    quality:
+      - type: sql
+        description: Zeitliche Abdeckung endet 2013 (Quellen-Limit, dokumentiert).
+        query: SELECT MAX(jahr) FROM gruppe3_fact_klima
+        mustBe: 2013
+
+  gruppe3_fact_gemeinde_stamm:
+    description: >
+      Gemeinde-Stammdaten als Snapshot ohne Zeitbezug (10.950 Zeilen) -
+      die Quelle project_gemeinden hat keine Zeitreihe.
+    fields:
+      gemeinde_id:
+        type: string
+        required: true
+        references: gruppe3_dim_gemeinde.gemeinde_id
+        description: FK auf dim_gemeinde.
+      einwohner_total:
+        type: bigint
+        description: Einwohner gesamt (Snapshot der Quelle).
+      einwohner_maennlich:
+        type: bigint
+        description: Einwohner maennlich (Snapshot).
+      einwohner_weiblich:
+        type: bigint
+        description: Einwohner weiblich (Snapshot).
+      anteil_weiblich_pct:
+        type: double
+        description: KPI Frauenanteil in Prozent.
+      area_km2:
+        type: double
+        description: Flaeche der Gemeinde in km2.
+      einwohner_pro_km2:
+        type: double
+        description: KPI Bevoelkerungsdichte (selbst berechnet aus total/area).
+    quality:
+      - type: text
+        description: >
+          Bekannte Einschraenkung (Stand 2026-07-06): 3 gemeinde_id kommen
+          doppelt vor (Duplikate mit gleichem Namen+PLZ in der Quelle) -
+          bei Aggregationen ggf. vorher deduplizieren; Fix ist geplant.
+
+  # ---------------------------------------------------------------------------
+  # AGGREGIERTER KPI-FAKT (das "Dashboard-fertige" Herzstueck)
+  # ---------------------------------------------------------------------------
+  gruppe3_fact_standortprofil_kpi:
+    description: >
+      Vorverdichtete Cross-Table-KPIs je Kreis und Jahr (4.099 Zeilen,
+      2015-2024): verbindet Bevoelkerung, Bauland, Klima (ueber die
+      Gemeinde-Bruecke) und Gemeinde-Dichte, damit ein Dashboard ohne
+      Mehrfach-Joins auskommt. NULL bedeutet immer: mindestens eine
+      Eingangsgroesse fehlt (amtlich unterdrueckt / kein Vorjahr / kein
+      Klima-Match) - NULL ist hier eine dokumentierte Aussage, kein Fehler.
+    fields:
+      kreis_id:
+        type: string
+        required: true
+        references: gruppe3_dim_kreis.kreis_id
+        description: FK auf dim_kreis (zusammen mit jahr eindeutig).
+      jahr:
+        type: int
+        required: true
+        references: gruppe3_dim_jahr.jahr
+        description: FK auf dim_jahr.
+      wohnraumdruck_index:
+        type: double
+        description: >
+          Einwohner je 1000 m2 neu veraeusserter Baulandflaeche (nie negativ,
+          hoeher = mehr Druck). 3.914 von 4.099 gefuellt.
+      baulandpreis_pro_kopf_eur:
+        type: double
+        description: Kaufsumme (EUR) pro Einwohner. 3.929 gefuellt.
+      freiflaeche_pro_einwohner_qm:
+        type: double
+        description: Neu veraeusserte Flaeche (m2) pro Einwohner. 3.929 gefuellt.
+      klima_angepasstes_wohnraumrisiko:
+        type: double
+        description: >
+          wohnraumdruck_index * (1 + temperatur_abweichung/10). 3.914 gefuellt.
+          ACHTUNG: Klimadaten enden 2013 - ab 2014 geht der Klima-Term
+          neutral (0) ein, der Wert entspricht dann dem wohnraumdruck_index.
+      verstaedterung_index:
+        type: double
+        description: >
+          Max. Gemeinde-Dichte / mittlere Gemeinde-Dichte des Kreises
+          (hoeher = ein dominantes Zentrum). 3.430 gefuellt.
+      standortattraktivitaets_score:
+        type: double
+        description: >
+          Je Jahr z-standardisierter Score aus Bevoelkerungswachstum (+),
+          Baulandpreis (-) und Klima-Abweichung (-). Nur INNERHALB eines
+          Jahres vergleichbar; negative Werte sind normal
+          (= unterdurchschnittlich attraktiv). 3.911 gefuellt.
+    quality:
+      - type: sql
+        description: Score-Spalte darf nie wieder komplett leer sein (s. docs/bugfix_score_nullwerte.md).
+        query: SELECT COUNT(standortattraktivitaets_score) FROM gruppe3_fact_standortprofil_kpi
+        mustBeGreaterThan: 0
+      - type: sql
+        description: Kein Kreis+Jahr doppelt.
+        query: |
+          SELECT COUNT(*) FROM (
+            SELECT kreis_id, jahr FROM gruppe3_fact_standortprofil_kpi
+            GROUP BY kreis_id, jahr HAVING COUNT(*) > 1
+          ) t
+        mustBe: 0
+
+# =============================================================================
+# Beispiel-Nutzung (wie das Datenprodukt konsumiert wird)
+# =============================================================================
+examples:
+  - type: sql
+    description: Top-10 Kreise mit dem hoechsten Wohnraumdruck 2023.
+    data: |
+      SELECT k.kreis_id, k.kreis_name, k.bundesland_name, f.wohnraumdruck_index
+      FROM gruppe3.gruppe3_fact_standortprofil_kpi f
+      JOIN gruppe3.gruppe3_dim_kreis k USING (kreis_id)
+      WHERE f.jahr = 2023
+      ORDER BY f.wohnraumdruck_index DESC
+      LIMIT 10;
+  - type: sql
+    description: Bevoelkerungsentwicklung eines Kreises als Zeitreihe (Beispiel Flensburg).
+    data: |
+      SELECT jahr, einwohner_insgesamt, wachstum_vorjahr_pct
+      FROM gruppe3.gruppe3_fact_bevoelkerung
+      WHERE kreis_id = '01001'
+      ORDER BY jahr;
+  - type: sql
+    description: Klimatrend einer Stadt (transliterierte Schreibweise beachten!).
+    data: |
+      SELECT jahr, avg_temperatur, temperatur_abweichung_grad
+      FROM gruppe3.gruppe3_fact_klima
+      WHERE stadt_name = 'Muenchen'
+      ORDER BY jahr;
+  - type: sql
+    description: Attraktivitaets-Ranking eines Jahres (z-Score, nur innerhalb eines Jahres vergleichen).
+    data: |
+      SELECT k.kreis_name, k.bundesland_name, f.standortattraktivitaets_score
+      FROM gruppe3.gruppe3_fact_standortprofil_kpi f
+      JOIN gruppe3.gruppe3_dim_kreis k USING (kreis_id)
+      WHERE f.jahr = 2022 AND f.standortattraktivitaets_score IS NOT NULL
+      ORDER BY f.standortattraktivitaets_score DESC
+      LIMIT 20;
