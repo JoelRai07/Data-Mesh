@@ -122,15 +122,23 @@ Quelle lesen, sondern die Dichte selbst berechnen
 (`einwohner_pro_km2 = population_total / area_km2`, fachlich identisch) — so wird
 die problematische Spalte gar nicht angefasst.
 
-## Noch auszuführen
-Der Fix ist reiner Code. Die Tabelle wird erst mit dem **nächsten Pipeline-Lauf**
-neu befüllt (`.venv/Scripts/python.exe src/pipeline_audit_to_target.py`, braucht die
-Spark-Umgebung: JDK 17 + `src/utils/ImpalaJDBC42.jar`). Danach gegenprüfen:
+## Ergebnis (Nachtrag 06.07.2026)
+Der Fix ist ausgerollt und gegengeprüft:
 
 ```sql
-SELECT COUNT(standortattraktivitaets_score) FROM gruppe3_fact_standortprofil_kpi;
--- sollte deutlich > 0 sein
+SELECT COUNT(*), COUNT(standortattraktivitaets_score)
+FROM gruppe3_fact_standortprofil_kpi;
+-- Ergebnis: 4099 Zeilen, davon 3911 mit Score (vorher: 0)
 ```
+
+Die verbleibenden NULLs sind die dokumentierten „echten" Lücken (s. Abgrenzung
+unten und Data Contract).
+
+**Hinweis zur Klima-Brücke:** Die hier beschriebene Koordinaten-Reparatur war
+Voraussetzung für den damaligen Distanz-Join. Inzwischen läuft die Anbindung
+Gemeinde↔Klimastadt per **Namens-Join** (s. `entscheidungen.md`, ADR-7); die
+reparierten Koordinaten bleiben trotzdem in `dim_gemeinde`/`dim_klimastadt`
+gespeichert und nutzbar.
 
 ## Abgrenzung: die „normalen" NULLs
 Die restlichen NULLs in den anderen KPI-Spalten sind **kein Bug**, sondern echte

@@ -22,15 +22,20 @@ und sind hierarchisch: die ersten 2 Stellen kodieren das Bundesland
 (`01` = Schleswig-Holstein). → Das ist unser natürlicher Integrationsschlüssel auf
 Kreis-Ebene.
 
-**Zentrale Erkenntnis 2:** `project_gemeinden` und `project_klimadaten` haben
-beide `latitude`/`longitude`. Damit lässt sich die sonst fehlende Verknüpfung
-zwischen Gemeinde-Ebene und Klimastadt-Ebene über **räumliche Nähe** (nächste
-Stadt anhand einfacher euklidischer Distanz auf lat/long, bewusst ohne
-Haversine-Trigonometrie — für die geografische Ausdehnung Deutschlands
-ausreichend genau) statt über unsicheres Namens-Matching herstellen.
-`project_gemeinden` wird damit zur **Brücken-Dimension** (`dim_gemeinde`),
-die Kreis-Ebene (Bevölkerung/Bauland) und Stadt-Ebene (Klima) verbindet — alle
-vier Quellen sind so in einem Modell nutzbar, nicht nur isoliert nebeneinander.
+**Zentrale Erkenntnis 2:** `project_gemeinden` und `project_klimadaten` lassen
+sich über die Gemeinde-Ebene verbinden: Nach der Bereinigung in der Audit-Stufe
+(Transliteration ä→ae/…, englische Exonyme wie „Munich"→„Muenchen" gemappt)
+liegen Gemeindenamen und Klimastadt-Namen im **selben Format** vor — die
+Verknüpfung erfolgt per **exaktem Namens-Match** (deterministisch, trifft 74
+von 81 deutschen Klimastädten; der Rest sind mehrdeutige Kurzformen wie
+„Frankfurt" und bleibt bewusst ohne Klimawert). `project_gemeinden` wird damit
+zur **Brücken-Dimension** (`dim_gemeinde`), die Kreis-Ebene
+(Bevölkerung/Bauland) und Stadt-Ebene (Klima) verbindet — alle vier Quellen
+sind so in einem Modell nutzbar, nicht nur isoliert nebeneinander.
+Beide Tabellen haben zusätzlich `latitude`/`longitude` (normalisiert in den
+Dimensionen gespeichert); ein früherer Ansatz nutzte die **räumliche Nähe**
+(nächste Klimastadt per lat/long-Distanz) — warum wir auf den Namens-Match
+gewechselt sind: s. `entscheidungen.md`, ADR-7.
 
 ## Gewähltes Modell: Star-Schema
 - **4 Dimensionen:** `dim_kreis` (Geografie), `dim_jahr` (Zeit), `dim_gemeinde`
@@ -45,7 +50,7 @@ vier Quellen sind so in einem Modell nutzbar, nicht nur isoliert nebeneinander.
 dim_kreis ──< fact_bevoelkerung   >── dim_jahr
 dim_kreis ──< fact_bauland        >── dim_jahr
 dim_kreis ──< dim_gemeinde ──< fact_gemeinde_stamm
-dim_gemeinde ──(nächste Stadt, lat/long)──> dim_klimastadt ──< fact_klima >── dim_jahr
+dim_gemeinde ──(Namens-Match, transliteriert)──> dim_klimastadt ──< fact_klima >── dim_jahr
 dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.g. Fakten)
 ```
 
@@ -65,9 +70,10 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
 3. **`dim_gemeinde` als zweite conformed dimension (Brücke).**
    Ohne `dim_gemeinde` bliebe `project_klimadaten` isoliert, da es keinen
    Regionalschlüssel besitzt. `dim_gemeinde` löst das doppelt: per Namens-Match
-   gegen `dim_kreis.kreis_name` (Anbindung an Kreis-Ebene) und per räumlicher
-   Nähe gegen `dim_klimastadt` (Anbindung an Klima). So wird aus vier losen
-   Tabellen ein zusammenhängendes Modell.
+   gegen `dim_kreis.kreis_name` (Anbindung an Kreis-Ebene) und per Namens-Match
+   gegen `dim_klimastadt.stadt_name` (Anbindung an Klima — beide Seiten in der
+   Audit-Stufe auf dieselbe ASCII-Schreibweise gebracht). So wird aus vier
+   losen Tabellen ein zusammenhängendes Modell.
 
 4. **Unpivot der Bevölkerungsdaten (breit → lang).**
    Die Quelle hat eine Spalte pro Jahr (`insgesamt_24`, `insgesamt_23`, …). Für ein
@@ -105,12 +111,14 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
 9. **Bewusste Abgrenzung (Scope & Datenqualität).**
    - `project_gemeinden` hat kaputtes CSV-Parsing (Kommas in Gemeindenamen
      sprengen das Quoting) und keinen amtlichen Schlüssel. Die Zuordnung zu
-     `dim_kreis` erfolgt daher per Namens-Match und ist fehlerbehaftet — das
-     wird im Data Contract mit einer Coverage-Quote dokumentiert, nicht
-     verschwiegen.
+     `dim_kreis` erfolgt daher per Namens-Match und ist fehlerbehaftet — im
+     [Data Contract](data_contract.yaml) mit Coverage-Quote dokumentiert
+     (97,5 %: 10.675 von 10.947 Gemeinden zugeordnet), nicht verschwiegen.
    - `project_klimadaten` hat keinen Regionalschlüssel (weltweite Städte) und
-     wird über die nächstgelegene Stadt (lat/long-Distanz) an `dim_gemeinde`
-     angebunden — ebenfalls eine Näherung, kein exakter Schlüssel-Join.
+     wird per Namens-Match an `dim_gemeinde` angebunden — 74 von 81 deutschen
+     Klimastädten, kein exakter Schlüssel-Join (ebenfalls im Data Contract
+     dokumentiert; zur Historie Distanz- vs. Namens-Join s.
+     `entscheidungen.md`, ADR-7).
    - Beide Einschränkungen entsprechen dem Data-Mesh-Prinzip „Federated
      Governance": Datenqualität wird ehrlich beschrieben statt ignoriert.
 

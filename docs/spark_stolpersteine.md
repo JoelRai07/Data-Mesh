@@ -165,9 +165,10 @@ Literale syntaktisch nicht akzeptiert.
 **Wichtig zu wissen:** Spark wird also nur noch zum **Lesen** der Rohdaten
 und fuer **alle Berechnungen/Transformationen** genutzt (das war ja der
 eigentliche Zweck dieser Variante). Das **Schreiben** laeuft am Ende ueber
-denselben impyla-Weg wie in der reinen SQL-Pipeline (`pipeline.py`) - aus
-gutem Grund: Impala ist primaer ein Lese-Motor, kein zuverlaessiges
-JDBC-Write-Target.
+denselben impyla-Weg wie in der frueheren reinen SQL-Pipeline (`pipeline.py`,
+inzwischen aus dem Repo entfernt - Historie s. `entscheidungen.md`,
+Abschnitt 3) - aus gutem Grund: Impala ist primaer ein Lese-Motor, kein
+zuverlaessiges JDBC-Write-Target.
 
 ## Stolperstein 6: `explode()` darf nicht in `CAST(...)` verschachtelt sein
 
@@ -192,10 +193,10 @@ hervorragend zum Lesen/Transformieren von Daten, aber Impala ist kein
 robustes Schreib-Ziel fuer Spark-JDBC-Writes.** Die Pipeline nutzt deshalb
 einen Hybrid-Ansatz: Spark fuer Unpivot (`F.explode`), Pivot
 (`DataFrame.pivot()`) und Window-Funktionen (u.a. echter z-Score per
-`STDDEV() OVER (...)`, was in reinem Impala-SQL nicht moeglich war, s.
-`pipeline.py`), aber impyla fuer das tatsaechliche Zurueckschreiben in die
-Zieltabellen. Das ist eine bewusste Architekturentscheidung, kein
-Kompromiss aus Zeitnot.
+`STDDEV() OVER (...)`, was in reinem Impala-SQL nicht moeglich war - daran
+scheiterte die fruehere reine SQL-Pipeline), aber impyla fuer das
+tatsaechliche Zurueckschreiben in die Zieltabellen. Das ist eine bewusste
+Architekturentscheidung, kein Kompromiss aus Zeitnot.
 
 ## Reihenfolge zum ersten Start auf einem neuen Rechner
 
@@ -206,6 +207,7 @@ Kompromiss aus Zeitnot.
 5. `JAVA_HOME` auf das JDK-17-Verzeichnis setzen, bevor `pipeline_audit_to_target.py`
    oder `scheduler.py` gestartet wird (scheduler.py macht das inzwischen
    automatisch, s. Kommentar dort - Pfad ggf. anpassen).
-6. `python src/create_datamodel.py` (idempotent, legt fehlende Tabellen an).
-7. `python src/pipeline_audit_to_target.py` zum manuellen Testen, oder
-   `python src/scheduler.py` fuer den dauerhaften 00:00-Uhr-Batch-Job.
+6. `python src/run_pipeline.py` - legt das Datenmodell an (idempotent) und
+   fuehrt alle drei Pipeline-Stufen in der richtigen Reihenfolge aus.
+7. Optional `python src/scheduler.py` fuer den dauerhaften 00:00-Uhr-Batch-Job
+   (Achtung: steht aktuell im Testmodus, s. TODO.md).

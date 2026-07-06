@@ -105,6 +105,7 @@ Data-Mesh/
     ├── Portfolioprüfung.pdf         # Aufgabenstellung
     ├── data_contract.yaml           # DELIVERABLE 3: Data Contract (Schema, Nutzung, Qualität)
     ├── datenmodell_begruendung.md   # DELIVERABLE 1: Begründung des Datenmodells
+    ├── entscheidungen.md            # Architektur-Entscheidungen (ADRs): aktiv + abgelöst + gelöste Probleme
     ├── spark_stolpersteine.md       # Spark-/JDBC-Probleme + Lösungen (Nachschlagewerk)
     ├── bugfix_score_nullwerte.md    # Fallstudie: warum eine KPI-Spalte komplett NULL war
     ├── scheduler_bug.md             # Fallstudie: APScheduler next_run_time
@@ -298,4 +299,5 @@ Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
    (harmlos, s. [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)),
    Docstring-Angabe „83 Spalten" für die Bevölkerungstabelle (real: 92).
 
+> **Warum ist alles so gebaut (und was galt früher)?** → [docs/entscheidungen.md](docs/entscheidungen.md) (ADRs + Problem-Historie)
 > Hintergrund & Prüfungsvorbereitung: [docs/projekt_notizen.md](docs/projekt_notizen.md)

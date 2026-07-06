@@ -13,7 +13,8 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
 - Wir sind **Gruppe 3** → arbeiten in der Impala-Datenbank **`gruppe3`**
   (jede Gruppe hat eine eigene: gruppe1..gruppe5). Alle Tabellen tragen das
   Präfix `gruppe3_`.
-- Quelltabellen: `gruppe3_project_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}`.
+- Quelltabellen: `default.project_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}`
+  (nur lesend; unsere Pipeline kopiert sie als `gruppe3_staging_*` in die eigene DB).
 
 ## 3. Datenmodell: Star-/Galaxy-Schema (4 Dim + 5 Fakten)
 - `dim_` = Beschriftungen (Wo/Wann), `fact_` = Zahlen (Messwerte).
@@ -24,9 +25,11 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
   - Kreis-Ebene: der **amtliche Regionalschlüssel** (`01001`); erste 2 Stellen
     = Bundesland. Verbindet Bevölkerung + Bauland exakt.
   - Klima hat **keinen** Schlüssel (weltweite Städte). Lösung: `dim_gemeinde`
-    als **Brücke** — Gemeinden haben Koordinaten, Klimastädte auch → zu jeder
-    Gemeinde die **geografisch nächste Klimastadt** (lat/long-Abstand). So hängt
-    Klima doch am Kreis.
+    als **Brücke** — nach der Bereinigung (Transliteration + „Munich"→„Muenchen")
+    haben Gemeinden und Klimastädte dieselbe Namens-Schreibweise → **exakter
+    Namens-Match** (74 von 81 Städten). So hängt Klima doch am Kreis.
+    (Früher: nächste Klimastadt per lat/long-Abstand — warum gewechselt:
+    `entscheidungen.md`, ADR-7.)
 - `fact_standortprofil_kpi` = das **fertige Datenprodukt** (alle KPIs pro Kreis ×
   Jahr vorberechnet, damit ein Dashboard nicht 5 Tabellen joinen muss).
 
@@ -64,7 +67,10 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
     keine verlässliche Änderungsspalte, mögliche nachträgliche Revisionen):
     Change Detection per Inhalts-Prüfsumme — Full Refresh (`INSERT OVERWRITE`)
     nur, wenn sich der Tabelleninhalt tatsächlich geändert hat, sonst wird der
-    Lauf übersprungen.
+    Lauf übersprungen. In der **Audit-Stufe** gehen `bauland`/`bevoelkerungzahlen`
+    sogar **zeilengenau**: Inhalts-Hash je Business-Key, nur neue/geänderte/
+    gelöschte Zeilen werden ersetzt (`gemeinden` bewusst nicht — kein
+    NULL-freier Schlüssel, s. Kommentar bei `KEY_COLUMNS`).
   - Zielschicht (Star-Schema, `pipeline_audit_to_target.py`): bleibt Full Rebuild
     (Fenster-Funktionen brauchen ganze Kreis+Jahr-Partitionen, Fakten sind klein),
     aber der komplette Spark-Lauf wird übersprungen, wenn sich seit dem letzten
@@ -88,30 +94,34 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
 - **4 Prinzipien:** Domain Ownership · Data as a Product · Self-Serve Data
   Platform · Federated Governance.
 - Im Projekt: `fact_standortprofil_kpi` = „Data as a Product"; ehrlich
-  dokumentierte Datenqualität = „Federated Governance".
+  dokumentierte Datenqualität = „Federated Governance". Das konkrete Artefakt
+  dazu ist unser **Data Contract** (`docs/data_contract.yaml`): Schema +
+  Semantik, Nutzungsregeln, SLA und **gemessene** Qualitätszahlen.
 
 ## 9. Datenqualität (ehrlich dokumentieren = Federated Governance)
-- Kaputte Umlaute (`L�beck`) und führende Leerzeichen in Namen (Rohdaten, noch
-  nicht bereinigt).
+- Kaputte Umlaute (`L�beck`) und führende Leerzeichen: **bereinigt** in Stufe 2
+  (Korrektur-Mappings + Transliteration, s. ADR-6 in `entscheidungen.md`);
+  verifiziert: 0 kaputte Zeichen in den Audit-Tabellen (06.07.2026).
 - `project_gemeinden`: CSV-Parsing-Fehler (Kommas in Namen), kein Schlüssel →
-  Kreis-Zuordnung per Namens-Match (fehlerbehaftet).
+  Kreis-Zuordnung per Namens-Match, 97,5 % Coverage (im Contract dokumentiert).
 - Bauland `flaeche = 0` bei echter Kaufsumme (Rundung auf 1000-qm-Einheiten) →
   hat den Score-Bug ausgelöst, s. `bugfix_score_nullwerte.md`.
-- Viele NULLs in KPI-Spalten = amtlich unterdrückte Werte / kein Vorjahr → als
-  Coverage-Quote in den Data Contract.
+- `kaufwert_je_qm_eur` ist **ab Quelle zerstört** (amtliche Dezimalwerte in
+  BIGINT-Spalte importiert → nur 0/NULL) — im Contract als „nicht verwenden"
+  markiert; `preis_pro_qm_eur` ist der berechnete Ersatz.
+- Viele NULLs in KPI-Spalten = amtlich unterdrückte Werte / kein Vorjahr →
+  NULL-Quoten je Spalte stehen im Data Contract.
 
 ## 10. Stand: was aus den Folien umgesetzt ist
 **Umgesetzt:** Star-Schema, Denormalisierung, Parquet, Unpivot/Pivot, Incremental
 Load (Wasserzeichen + Change Detection, s. Punkt 6), Batch, Scheduler, „Data as
 a Product".
 **Anders:** Pipeline in Spark statt NiFi (vom Prof erlaubt/bevorzugt).
-**Noch offen / Kür:** Data Contract (Pflicht, kommt Do. im Unterricht),
-Open Table Format / **Iceberg** statt nur Parquet (echte Kür für Extra-Punkte,
-würde v.a. echtes row-level MERGE/UPDATE ermöglichen, das plain Impala/Parquet
-nicht kann — s. Doku in `src/etl_state.py`).
+**Erledigt statt offen:** Data Contract ✔ (`docs/data_contract.yaml`),
+Encoding-Bereinigung ✔, Score-Fix ausgerollt ✔ (3.911/4.099 gefüllt).
+**Kür-Idee:** Open Table Format / **Iceberg** statt nur Parquet (würde v.a.
+echtes row-level MERGE/UPDATE ermöglichen, das plain Impala/Parquet nicht
+kann — s. Doku in `src/etl_state.py`).
 
 ## 11. Offene Punkte vor der Abgabe
-- Scheduler von Testmodus (`minute="*"`) zurück auf `hour=0, minute=0`.
-- Score-Bugfix per Pipeline-Lauf ausrollen und gegenprüfen.
-- Umlaute/Leerzeichen bereinigen.
-- Data Contract erstellen.
+→ zentrale Aufgabenliste: [../TODO.md](../TODO.md) (einzige Quelle, hier nicht dupliziert).
