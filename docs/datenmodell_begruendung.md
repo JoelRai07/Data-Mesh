@@ -115,5 +115,10 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
      Governance": Datenqualität wird ehrlich beschrieben statt ignoriert.
 
 ## Idempotenz
-Alle DDLs nutzen `CREATE TABLE IF NOT EXISTS`; die Befüllung (Pipeline) überschreibt
-(`INSERT OVERWRITE`) je Lauf. Mehrfaches Ausführen erzeugt damit keine Duplikate.
+Alle DDLs nutzen `CREATE TABLE IF NOT EXISTS`. Die Befüllung ist inkrementell
+(s. `src/etl_state.py` und die Modul-Docstrings der drei Pipeline-Stufen):
+Zeitreihen-Tabellen (`klimadaten`) werden per Wasserzeichen nur um neue Zeilen
+ergänzt (`INSERT INTO`), Snapshot-Tabellen (`bauland`, `bevoelkerungzahlen`,
+`gemeinden`) und das Star-Schema werden nur bei tatsächlicher Änderung per
+`INSERT OVERWRITE` komplett neu geschrieben. In beiden Fällen erzeugt
+mehrfaches Ausführen keine Duplikate.

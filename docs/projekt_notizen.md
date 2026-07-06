@@ -55,9 +55,21 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
   mittelschwer machbar, weil Spark 3.5 `PIVOT`/`UNPIVOT`/Window nativ in SQL kann.)
 
 ## 6. Pipeline & Scheduler
-- **Lade-Muster: Full Load** — jeder Lauf leert die Zieltabelle (`TRUNCATE`) und
-  füllt sie komplett neu (`INSERT`). Dadurch **idempotent**: mehrfach ausführbar,
-  keine Duplikate. (Alternative: Incremental Load / CDC — nur benennen können.)
+- **Lade-Muster: Incremental Load**, differenziert nach Tabellenart (State-Tabelle
+  `gruppe3_etl_state`, s. `src/etl_state.py`):
+  - `klimadaten` (echte Zeitreihe, 8,6 Mio. Zeilen, Spalte `dt`): Wasserzeichen-
+    Append (`INSERT INTO` nur neuer Zeilen) in Staging **und** Audit — kein
+    Full Rewrite mehr im Regelbetrieb.
+  - `bauland`/`bevoelkerungzahlen`/`gemeinden` (amtliche Statistiken/Stammdaten,
+    keine verlässliche Änderungsspalte, mögliche nachträgliche Revisionen):
+    Change Detection per Inhalts-Prüfsumme — Full Refresh (`INSERT OVERWRITE`)
+    nur, wenn sich der Tabelleninhalt tatsächlich geändert hat, sonst wird der
+    Lauf übersprungen.
+  - Zielschicht (Star-Schema, `pipeline_audit_to_target.py`): bleibt Full Rebuild
+    (Fenster-Funktionen brauchen ganze Kreis+Jahr-Partitionen, Fakten sind klein),
+    aber der komplette Spark-Lauf wird übersprungen, wenn sich seit dem letzten
+    Ziel-Build keine Audit-Tabelle verändert hat.
+  - Nach wie vor **idempotent**: mehrfaches Ausführen erzeugt keine Duplikate.
 - **Batch, nicht Streaming**: ein täglicher Lauf.
 - **Scheduler**: `scheduler.py` (APScheduler, `CronTrigger(hour=0, minute=0)`).
   Läuft **lokal** — für die Code-Abgabe ok. **Ehrliche Grenze für die
@@ -89,12 +101,14 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
   Coverage-Quote in den Data Contract.
 
 ## 10. Stand: was aus den Folien umgesetzt ist
-**Umgesetzt:** Star-Schema, Denormalisierung, Parquet, Unpivot/Pivot, Full-Load-
-Pattern, Batch, Scheduler, „Data as a Product".
+**Umgesetzt:** Star-Schema, Denormalisierung, Parquet, Unpivot/Pivot, Incremental
+Load (Wasserzeichen + Change Detection, s. Punkt 6), Batch, Scheduler, „Data as
+a Product".
 **Anders:** Pipeline in Spark statt NiFi (vom Prof erlaubt/bevorzugt).
 **Noch offen / Kür:** Data Contract (Pflicht, kommt Do. im Unterricht),
-Incremental Load / CDC (nur erwähnen), Open Table Format / **Iceberg** statt nur
-Parquet (echte Kür für Extra-Punkte).
+Open Table Format / **Iceberg** statt nur Parquet (echte Kür für Extra-Punkte,
+würde v.a. echtes row-level MERGE/UPDATE ermöglichen, das plain Impala/Parquet
+nicht kann — s. Doku in `src/etl_state.py`).
 
 ## 11. Offene Punkte vor der Abgabe
 - Scheduler von Testmodus (`minute="*"`) zurück auf `hour=0, minute=0`.

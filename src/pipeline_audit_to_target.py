@@ -55,12 +55,17 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType
 
 from db import get_connection
+from etl_state import ensure_state_table, get_latest_state, record_state
 
 load_dotenv()
 
 DATABASE = "gruppe3"
 JDBC_JAR_PATH = os.path.join(os.path.dirname(__file__), "utils", "ImpalaJDBC42.jar")
 JDBC_DRIVER_CLASS = "com.cloudera.impala.jdbc.Driver"  # verifiziert aus der Jar, s. Hinweis oben
+
+# Fachliche Namen der vier Audit-Quelltabellen, aus denen sich das komplette
+# Star-Schema speist (s. AUDIT_SOURCE_TABLES-Nutzung in should_skip_target_build).
+AUDIT_SOURCE_TABLES = ["bauland", "bevoelkerungzahlen", "gemeinden", "klimadaten"]
 
 
 def safe_div(numerator, denominator):
@@ -648,10 +653,71 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
 
 
 # ---------------------------------------------------------------------------
+# INCREMENTAL LOADING - STUFE 3 (audit -> target)
+# ---------------------------------------------------------------------------
+#
+# Das Star-Schema selbst bleibt bewusst Full Reload (s. should_skip_target_build
+# und die Erklaerung dort) - Unpivot/Pivot sowie die Fenster-Funktionen
+# AVG()/STDDEV() OVER (PARTITION BY jahr) in build_fact_standortprofil_kpi
+# brauchen ohnehin JEDE Zeile der betroffenen Kreis+Jahr-Partition, ein
+# "nur die neuen Zeilen nachrechnen" wuerde bei bestehenden Jahren falsche
+# Durchschnitte/Standardabweichungen liefern. Die Ziel-Faktentabellen sind mit
+# ca. 400 Kreisen x 30 Jahren zudem klein (Groessenordnung 10.000-15.000
+# Zeilen) - anders als bei gruppe3_staging_klimadaten (8,6 Mio. Zeilen) lohnt
+# sich ein inkrementeller Teil-Rebuild hier fachlich nicht.
+#
+# Der EINE Punkt, an dem trotzdem unnoetige Arbeit vermieden wird: der
+# komplette Spark-Lauf (JVM-Start, JDBC-Reads, Neuberechnung, impyla-
+# Batch-Writes) wird uebersprungen, wenn sich SEIT DEM LETZTEN Ziel-Build
+# keine der vier Audit-Tabellen veraendert hat (s. should_skip_target_build).
+# Das ist besonders relevant, weil scheduler.py diese Pipeline taeglich
+# (im Testmodus sogar minuetlich) aufruft, waehrend pipeline_default_to_staging.py/
+# pipeline_staging_to_audit.py aktuell manuell und deutlich seltener laufen.
+
+
+def should_skip_target_build(cur):
+    """
+    Liest den Aufzeichnungszeitpunkt des letzten erfolgreichen Ziel-Builds
+    (stage="target") und vergleicht ihn mit dem juengsten Aenderungszeitpunkt
+    der vier Audit-Tabellen. record_state() in pipeline_staging_to_audit.py wird
+    NUR aufgerufen, wenn eine Audit-Tabelle tatsaechlich neu verarbeitet wurde
+    (s. dortige audit_table_incremental/audit_table_snapshot) - der juengste
+    recorded_at-Wert je Audit-Tabelle ist daher exakt "wann hat sich dieser
+    Audit-Stand zuletzt inhaltlich veraendert".
+
+    True, wenn seit dem letzten Ziel-Build nichts Neues vorliegt (Spark-Lauf
+    kann uebersprungen werden). False, wenn noch nie gebaut wurde oder
+    mindestens eine Audit-Tabelle neuer ist als der letzte Ziel-Build.
+    """
+    target_state = get_latest_state(cur, "target", "all")
+    if target_state is None:
+        return False
+
+    for name in AUDIT_SOURCE_TABLES:
+        audit_state = get_latest_state(cur, "audit", name)
+        if audit_state is None or audit_state["recorded_at"] > target_state["recorded_at"]:
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # AUSFUEHRUNG
 # ---------------------------------------------------------------------------
 
 def main():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"USE {DATABASE}")
+    ensure_state_table(cur)
+    skip = should_skip_target_build(cur)
+    cur.close()
+    conn.close()
+
+    if skip:
+        print("Keine Aenderung in den Audit-Tabellen seit dem letzten Ziel-Build - Spark-Lauf wird uebersprungen.")
+        return
+
     spark = get_spark()
     spark.sparkContext.setLogLevel("WARN")
 
@@ -703,6 +769,14 @@ def main():
     print(f"  -> OK ({fact_standortprofil_kpi.count()} Zeilen)")
 
     spark.stop()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"USE {DATABASE}")
+    record_state(cur, "target", "all")
+    cur.close()
+    conn.close()
+
     print("\nFertig.")
 
 

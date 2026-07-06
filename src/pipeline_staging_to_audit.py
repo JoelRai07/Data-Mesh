@@ -71,13 +71,54 @@ WARUM DIE SPALTENLISTE PER DESCRIBE ERMITTELT WIRD (statt hart codiert):
   Spalten mit Bereinigungsregel durch einen SQL-Ausdruck ersetzt, alle anderen
   Spalten bleiben ein einfacher Spaltenname.
 
-IMMER OVERWRITE, NIE DUPLIZIEREN:
-  INSERT OVERWRITE TABLE ersetzt bei jedem Lauf den kompletten Tabelleninhalt
-  (Full-Load-Pattern, analog zu pipeline_default_to_staging.py/pipeline_audit_to_target.py).
+INCREMENTAL LOADING (spiegelt die Einteilung aus pipeline_default_to_staging.py,
+s. dortiger Modul-Docstring fuer die fachliche Begruendung):
+  - gruppe3_staging_klimadaten (TIME_SERIES_TABLES): echte Zeitreihe. Es wird
+    nur der bereits in der Staging-Stufe neu angehaengte Bereich (dt > eigenes
+    Audit-Wasserzeichen) bereinigt und per INSERT INTO (APPEND) an
+    gruppe3_audit_klimadaten angehaengt - nie mehr ein Full Rewrite der
+    kompletten (potenziell 8,6 Mio. Zeilen grossen) Audit-Tabelle. Das
+    Audit-Wasserzeichen wird bewusst UNABHAENGIG vom Staging-Wasserzeichen in
+    einer eigenen State-Zeile (stage="audit") gefuehrt: Staging und Audit sind
+    zwei getrennte Skript-Laeufe, die zeitlich auseinanderfallen koennen (z.B.
+    Staging laeuft, Audit schlaegt fehl) - jede Stufe muss daher unabhaengig
+    wissen, bis wohin SIE SELBST schon verarbeitet hat.
+  - bauland/bevoelkerungzahlen (KEY_COLUMNS): ECHTES zeilengenaues
+    Incremental Merge per Business-Key (audit_table_keyed_snapshot, s.
+    dortige Funktions-Dokumentation fuer das genaue Vorgehen und die
+    CREATE-NEW-SWAP-DROP-Technik, die noetig ist, weil Impala weder UPDATE
+    noch MERGE kennt). Kurzfassung: Jede Zeile bekommt ueber ihren
+    fachlichen Schluessel einen Inhalts-Hash; nur Zeilen mit neuem/
+    geaendertem/verschwundenem Hash werden neu bereinigt bzw. entfernt, alle
+    unveraenderten Zeilen werden unangetastet aus der bisherigen Audit-Tabelle
+    uebernommen.
+  - gemeinden (TABLE_LEVEL_SNAPSHOT_TABLES): bewusst KEIN zeilengenauer
+    Merge, sondern die reine Tabellen-Pruefsumme (audit_table_snapshot(),
+    content_signature() - "hat sich IRGENDWO etwas geaendert", nicht WELCHE
+    Zeilen). Grund: project_gemeinden hat weder einen amtlichen Schluessel
+    noch garantiert NULL-freie municipality_name/postal_code-Werte (kaputtes
+    CSV-Parsing) - ein zeilengenauer Merge wurde live getestet und erkannte
+    selbst nach einem kompletten Datenbank-Reset im direkt folgenden Lauf
+    trotz unveraenderter Quelle faelschlich eine Aenderung (vermutlich durch
+    NULL-bedingte Kollisionen im Schluessel, s. Kommentar bei KEY_COLUMNS
+    unten). Bei nur ca. 11.000 Zeilen ist der Verzicht auf Zeilengenauigkeit
+    hier ohne spuerbaren Performance-Nachteil.
 
 Ausfuehren:  .venv/Scripts/python.exe src/pipeline_staging_to_audit.py
 """
 from db import get_connection
+from etl_state import (
+    ensure_state_table,
+    get_latest_state,
+    record_state,
+    content_signature,
+    ensure_row_state_table,
+    get_latest_row_hashes,
+    record_row_hashes,
+    ensure_changed_keys_table,
+    load_changed_keys,
+    CHANGED_KEYS_TABLE,
+)
 
 DATABASE = "gruppe3"
 PREFIX = "gruppe3_"
@@ -90,6 +131,48 @@ STAGING_TABLES = {
     "klimadaten": PREFIX + "staging_klimadaten",
 }
 AUDIT_TABLES = {name: PREFIX + "audit_" + name for name in STAGING_TABLES}
+
+# Nur klimadaten ist eine echte, verlaesslich anhaengende Zeitreihe (Spalte
+# "dt") -> Wasserzeichen-Append. Der Rest sind Snapshots amtlicher
+# Statistiken/Stammdaten ohne verlaesslichen Aenderungsindikator auf
+# Zeilenebene -> Change Detection per Inhalts-Pruefsumme (s. Modul-Docstring).
+TIME_SERIES_TABLES = {"klimadaten"}
+TIME_SERIES_WATERMARK_COLUMN = "dt"
+SNAPSHOT_TABLES = set(STAGING_TABLES) - TIME_SERIES_TABLES
+
+# Business-Keys je Snapshot-Tabelle, fuer das zeilengenaue Incremental Merge
+# in audit_table_keyed_snapshot(). NUR fuer Tabellen MIT einem hinreichend
+# verlaesslichen Schluessel - bevoelkerungzahlen (id = amtlicher
+# Regionalschluessel) und bauland (kreis_id+jahr+merkmal, s.
+# datenmodell_begruendung.md).
+#
+# gemeinden ABSICHTLICH NICHT hier drin (mehr dazu unten bei
+# TABLE_LEVEL_SNAPSHOT_TABLES): project_gemeinden hat weder einen amtlichen
+# Schluessel noch garantiert NULL-freie municipality_name/postal_code-Werte
+# (kaputtes CSV-Parsing, s. Modul-Docstring oben). CONCAT_WS() ueberspringt
+# NULL-Werte beim Zusammensetzen des Keys - bei NULLs in einer der beiden
+# Spalten koennten dadurch mehrere fachlich verschiedene Zeilen auf denselben
+# row_key kollabieren (nicht nur die 3 bestaetigten Namens-Duplikate). Live
+# beobachtet: selbst nach einem kompletten Datenbank-Reset (also garantiert
+# OHNE Altlasten aus einem frueheren, noch nicht deterministischen Hash-Stand)
+# wurde gemeinden im direkt folgenden zweiten Lauf trotz unveraenderter Quelle
+# erneut als "geaendert" erkannt - ein Hinweis auf genau so ein
+# Kollisions-Cluster, das per Definition nicht zuverlaessig ueber einen
+# einzelnen Business-Key stabilisierbar ist. Statt hier weiter an einem
+# Schluessel herumzudoktern, der nachweislich nicht tragfaehig ist, faellt
+# gemeinden bewusst auf die robustere, tabellenweite Pruefsumme zurueck
+# (audit_table_snapshot(), dieselbe Technik wie am Anfang dieses Projekts) -
+# bei nur ~11.000 Zeilen ist der Vollkosten-Nachteil eines gelegentlichen
+# Full Refresh ohnehin vernachlaessigbar.
+KEY_COLUMNS = {
+    "bauland": ["kreis_id", "jahr", "merkmal"],
+    "bevoelkerungzahlen": ["id"],
+}
+
+# Snapshot-Tabellen ohne (hinreichend) verlaesslichen Business-Key -> Change
+# Detection nur auf Tabellenebene (audit_table_snapshot()), kein zeilengenauer
+# Merge. Aktuell nur gemeinden (s. Kommentar bei KEY_COLUMNS).
+TABLE_LEVEL_SNAPSHOT_TABLES = SNAPSHOT_TABLES - set(KEY_COLUMNS)
 
 # Umlaut -> ASCII-Ersatz, inkl. Grossschreibung. Fuer Spalten OHNE Beschaedigung
 # (project_gemeinden.municipality_name), wo eine echte Transliteration moeglich ist.
@@ -329,6 +412,206 @@ def build_select_list(columns, column_rules):
     )
 
 
+def audit_table_incremental(cur, name, staging_table, audit_table_name, select_list, base_where):
+    """
+    Echtes Incremental Load per Wasserzeichen fuer Zeitreihen-Tabellen
+    (aktuell nur klimadaten): bereinigt beim ersten Lauf einmalig den
+    kompletten Bestand (INSERT OVERWRITE), danach nur noch den Bereich
+    dt > eigenem Audit-Wasserzeichen (INSERT INTO, ANHAENGEN statt
+    ueberschreiben). Dieselben AUDIT_RULES/Bereinigungsausdruecke wie bisher,
+    nur der WHERE-Filter kommt zusaetzlich dazu.
+    """
+    state = get_latest_state(cur, "audit", name)
+    watermark = state["watermark_value"] if state else None
+
+    filters = [base_where] if base_where else []
+    if watermark is not None:
+        filters.append(f"{TIME_SERIES_WATERMARK_COLUMN} > '{watermark}'")
+    where_clause = " WHERE " + " AND ".join(filters) if filters else ""
+
+    if watermark is None:
+        cur.execute(
+            f"INSERT OVERWRITE TABLE {audit_table_name} SELECT {select_list} FROM {staging_table}{where_clause}"
+        )
+        changed = True
+    else:
+        # Dieselben Filter wie der eigentliche INSERT (inkl. base_where, z.B.
+        # country = 'Germany') - sonst wuerde "changed" auch bei neuen,
+        # aber fachlich irrelevanten Zeilen (z.B. neue Messtage fuer
+        # Nicht-Deutschland-Staedte) True liefern und einen nutzlosen
+        # Leer-INSERT ausloesen.
+        cur.execute(f"SELECT COUNT(*) FROM {staging_table}{where_clause}")
+        changed = cur.fetchone()[0] > 0
+        if changed:
+            cur.execute(
+                f"INSERT INTO {audit_table_name} SELECT {select_list} FROM {staging_table}{where_clause}"
+            )
+
+    cur.execute(f"SELECT MAX({TIME_SERIES_WATERMARK_COLUMN}) FROM {staging_table}")
+    new_watermark = cur.fetchone()[0]
+    if new_watermark is not None:
+        record_state(cur, "audit", name, watermark_value=new_watermark)
+
+    cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+    return cur.fetchone()[0], changed
+
+
+def _key_expr(alias, key_columns):
+    """SQL-Ausdruck: fachlicher Business-Key mehrerer Spalten als EIN
+    String, fuer Vergleich/Join gegen CHANGED_KEYS_TABLE.row_key."""
+    cols = ", ".join(f"CAST({alias}.{c} AS STRING)" for c in key_columns)
+    return f"CONCAT_WS('||', {cols})"
+
+
+def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, select_list, base_where, key_columns):
+    """
+    Echtes ZEILENGENAUES Incremental Merge fuer Snapshot-Tabellen MIT
+    hinreichend verlaesslichem Business-Key (bauland, bevoelkerungzahlen,
+    s. KEY_COLUMNS - gemeinden bewusst NICHT, s. dortiger Kommentar).
+
+    Vorgehen:
+    1) Fuer jede Zeile der Staging-Tabelle einen Inhalts-Hash je Business-Key
+       berechnen (server-seitig in Impala, FNV_HASH - dieselbe Technik wie
+       content_signature(), nur JE ZEILE statt ueber die ganze Tabelle
+       aggregiert) und mit dem zuletzt aufgezeichneten Hash je Key
+       vergleichen (gruppe3_etl_row_state, s. etl_state.py).
+    2) Keys, die neu sind, einen anderen Hash haben ODER komplett aus der
+       Quelle verschwunden sind (geloescht) landen in "keys_to_replace".
+       Ist diese Menge leer, ist WIRKLICH keine einzige Zeile betroffen ->
+       Lauf ueberspringen.
+    3) Sonst: die betroffenen Keys in die kurzlebige Hilfstabelle
+       CHANGED_KEYS_TABLE schreiben und die neue Audit-Tabelle aus zwei
+       Teilen zusammensetzen:
+         a) alle BISHERIGEN Audit-Zeilen, deren Key NICHT betroffen ist
+            (unangetastet uebernommen, kein erneutes Bereinigen noetig)
+         b) frisch bereinigte Zeilen (dieselben AUDIT_RULES/select_list wie
+            bisher) aus der Staging-Tabelle fuer GENAU die betroffenen Keys
+       Geloeschte Keys fallen dabei automatisch weg: sie sind in (a)
+       ausgeschlossen (Key ist betroffen) und liefern in (b) keine Treffer
+       (Key existiert in der Staging-Tabelle nicht mehr).
+
+    WARUM "CREATE NEW TABLE + RENAME-SWAP + DROP" STATT EINFACH
+    INSERT OVERWRITE TABLE audit SELECT ... FROM audit ...?
+      Impala kann nicht sicher aus einer Tabelle LESEN, waehrend dieselbe
+      Tabelle per INSERT OVERWRITE geleert/ueberschrieben wird (Race
+      zwischen dem laufenden Scan und dem Truncate-Schritt von OVERWRITE -
+      im schlechtesten Fall werden 0 Zeilen gelesen, das Ergebnis waere dann
+      nur noch der neue Teil, der alte Bestand waere verloren). Stattdessen
+      wird das Merge-Ergebnis in eine NEUE Tabelle geschrieben
+      (CREATE TABLE ... AS SELECT), und die Tabellen werden erst DANACH per
+      ALTER TABLE ... RENAME TO getauscht. Reihenfolge bewusst so gewaehlt,
+      dass zu keinem Zeitpunkt Daten verloren gehen koennten, falls der
+      Prozess mittendrin abbricht: zuerst wird das ALTE Original umbenannt
+      (nie geloescht, solange die neue Tabelle nicht sicher an ihrem Platz
+      ist), erst zuletzt wird die alte Kopie geloescht.
+    """
+    all_columns = get_columns(cur, staging_table)
+    key_expr_plain = "CONCAT_WS('||', " + ", ".join(f"CAST({c} AS STRING)" for c in key_columns) + ")"
+    hash_expr = "fnv_hash(CONCAT_WS('|', " + ", ".join(f"CAST({c} AS STRING)" for c in all_columns) + "))"
+
+    # GROUP BY + MIN() statt eines Python-Dicts ueber cur.fetchall(): selbst bei
+    # den hier verwendeten, grundsaetzlich verlaesslichen Schluesseln
+    # (bauland/bevoelkerungzahlen) ist eine deterministische Zusammenfuehrung
+    # robuster als "die zuletzt gelesene Zeile gewinnt" - Impala garantiert
+    # OHNE ORDER BY keine stabile Zeilenreihenfolge zwischen zwei Laeufen,
+    # wodurch bei einem etwaigen Duplikat-Key der Hash zufaellig zwischen zwei
+    # Werten haette hin- und herspringen koennen (erkannte "Aenderung" ohne
+    # echte Aenderung an den Daten - genau dieses Verhalten wurde live bei
+    # gemeinden beobachtet, s. Kommentar bei KEY_COLUMNS, weshalb gemeinden
+    # aus diesem Merge-Pfad herausgenommen wurde). MIN()
+    # ist ein deterministisches Aggregat: unabhaengig von der Scan-Reihenfolge
+    # liefert es fuer dieselbe Menge an Hash-Werten IMMER denselben einen Wert.
+    cur.execute(
+        f"SELECT row_key, MIN(row_hash) AS row_hash FROM ("
+        f"SELECT {key_expr_plain} AS row_key, {hash_expr} AS row_hash FROM {staging_table}"
+        f") t GROUP BY row_key"
+    )
+    current_hashes = {row_key: str(row_hash) for row_key, row_hash in cur.fetchall()}
+
+    previous_hashes = get_latest_row_hashes(cur, name)
+
+    changed_keys = [key for key, h in current_hashes.items() if previous_hashes.get(key) != h]
+    deleted_keys = [key for key in previous_hashes if key not in current_hashes]
+    keys_to_replace = changed_keys + deleted_keys
+
+    if not keys_to_replace:
+        cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+        return cur.fetchone()[0], False
+
+    ensure_changed_keys_table(cur)
+    load_changed_keys(cur, keys_to_replace)
+
+    where_clause = f" WHERE {base_where}" if base_where else ""
+    key_expr_audit = _key_expr("a", key_columns)
+    key_expr_staging = _key_expr("s", key_columns)
+    incoming_table = f"{audit_table_name}_incoming"
+    old_table = f"{audit_table_name}_old"
+
+    cur.execute(f"DROP TABLE IF EXISTS {incoming_table}")
+    cur.execute(
+        f"CREATE TABLE {incoming_table} STORED AS PARQUET AS "
+        f"SELECT * FROM {audit_table_name} a "
+        f"LEFT ANTI JOIN {CHANGED_KEYS_TABLE} c ON {key_expr_audit} = c.row_key "
+        f"UNION ALL "
+        f"SELECT {select_list} FROM {staging_table} s "
+        f"LEFT SEMI JOIN {CHANGED_KEYS_TABLE} c ON {key_expr_staging} = c.row_key"
+        f"{where_clause}"
+    )
+
+    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+    cur.execute(f"ALTER TABLE {audit_table_name} RENAME TO {old_table}")
+    cur.execute(f"ALTER TABLE {incoming_table} RENAME TO {audit_table_name}")
+    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+
+    # Neue/geaenderte Keys mit ihrem aktuellen Hash aufzeichnen, geloeschte
+    # Keys als Tombstone (row_hash=None) - sonst wuerden sie bei jedem
+    # weiteren Lauf faelschlich erneut als "geloescht" erkannt (s.
+    # get_latest_row_hashes-Doku in etl_state.py).
+    record_row_hashes(
+        cur, name,
+        [(k, current_hashes[k]) for k in changed_keys] + [(k, None) for k in deleted_keys],
+    )
+
+    # Tabellen-Ebene weiterhin zusaetzlich pflegen: das ist, was
+    # should_skip_target_build() in pipeline_audit_to_target.py liest, um zu
+    # entscheiden, ob sich der Spark-Rebuild des Star-Schemas lohnt.
+    row_count_staging, content_hash = content_signature(cur, staging_table, all_columns)
+    record_state(cur, "audit", name, content_hash=content_hash, row_count=row_count_staging)
+
+    cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+    return cur.fetchone()[0], True
+
+
+def audit_table_snapshot(cur, name, staging_table, audit_table_name, select_list, base_where):
+    """
+    Snapshot-Tabelle OHNE hinreichend verlaesslichen Business-Key (aktuell nur
+    gemeinden, s. Kommentar bei TABLE_LEVEL_SNAPSHOT_TABLES): Inhalts-
+    Pruefsumme der STAGING-Tabelle (nicht der Audit-Tabelle - der Audit-Schritt
+    prueft, ob sich sein EINGANG veraendert hat) bilden und mit dem zuletzt
+    aufgezeichneten Stand vergleichen. Unveraendert -> Audit-Lauf ueberspringen.
+    Veraendert -> komplette Neuberechnung (INSERT OVERWRITE) mit den
+    bestehenden AUDIT_RULES. Bewusst KEIN zeilengenauer Merge - anders als
+    bauland/bevoelkerungzahlen fehlt hier ein Schluessel, der Zeilen
+    zuverlaessig (NULL-frei, eindeutig) identifiziert.
+    """
+    columns = get_columns(cur, staging_table)
+    row_count_staging, content_hash = content_signature(cur, staging_table, columns)
+
+    state = get_latest_state(cur, "audit", name)
+    if state and state["content_hash"] == content_hash:
+        cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+        return cur.fetchone()[0], False
+
+    where_clause = f" WHERE {base_where}" if base_where else ""
+    cur.execute(
+        f"INSERT OVERWRITE TABLE {audit_table_name} SELECT {select_list} FROM {staging_table}{where_clause}"
+    )
+    record_state(cur, "audit", name, content_hash=content_hash, row_count=row_count_staging)
+
+    cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+    return cur.fetchone()[0], True
+
+
 def audit_table(cur, name):
     staging_table = STAGING_TABLES[name]
     audit_table_name = AUDIT_TABLES[name]
@@ -338,24 +621,31 @@ def audit_table(cur, name):
 
     columns = get_columns(cur, staging_table)
     select_list = build_select_list(columns, rule["columns"])
-    where_clause = f" WHERE {rule['where']}" if rule["where"] else ""
 
-    cur.execute(f"INSERT OVERWRITE TABLE {audit_table_name} SELECT {select_list} FROM {staging_table}{where_clause}")
-
-    cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
-    return cur.fetchone()[0]
+    if name in TIME_SERIES_TABLES:
+        return audit_table_incremental(cur, name, staging_table, audit_table_name, select_list, rule["where"])
+    if name in KEY_COLUMNS:
+        return audit_table_keyed_snapshot(
+            cur, name, staging_table, audit_table_name, select_list, rule["where"], KEY_COLUMNS[name]
+        )
+    return audit_table_snapshot(cur, name, staging_table, audit_table_name, select_list, rule["where"])
 
 
 def main():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"USE {DATABASE}")
+    ensure_state_table(cur)
+    ensure_row_state_table(cur)
     print(f"Datenbank: {DATABASE}\n")
 
     for name in STAGING_TABLES:
         print(f"Audit {STAGING_TABLES[name]} -> {AUDIT_TABLES[name]} ...")
-        row_count = audit_table(cur, name)
-        print(f"  -> OK ({row_count} Zeilen)")
+        row_count, changed = audit_table(cur, name)
+        if changed:
+            print(f"  -> OK ({row_count} Zeilen, aktualisiert)")
+        else:
+            print(f"  -> OK ({row_count} Zeilen, unveraendert - Lauf uebersprungen)")
 
     cur.close()
     conn.close()
