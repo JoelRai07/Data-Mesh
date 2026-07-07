@@ -106,6 +106,8 @@ s. dortiger Modul-Docstring fuer die fachliche Begruendung):
 
 Ausfuehren:  .venv/Scripts/python.exe src/pipeline_staging_to_audit.py
 """
+import os
+
 from db import get_connection
 from etl_state import (
     ensure_state_table,
@@ -120,8 +122,8 @@ from etl_state import (
     CHANGED_KEYS_TABLE,
 )
 
-DATABASE = "gruppe3"
-PREFIX = "gruppe3_"
+DATABASE = os.getenv("DATABASE", "gruppe3")
+PREFIX = os.getenv("PREFIX", "gruppe3_")
 
 # Name des Basistabellen-Themas -> Staging-/Audit-Tabellenname
 STAGING_TABLES = {

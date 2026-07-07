@@ -19,13 +19,16 @@ Eigenschaften (s. Begruendung in docs/datenmodell_begruendung.md):
 
 Ausfuehren:  .venv/Scripts/python.exe src/create_datamodel.py
 """
+import os
+
 from db import get_connection
 
-# Unsere Gruppe arbeitet in der Datenbank "gruppe3" (jede Gruppe hat eine eigene).
-DATABASE = "gruppe3"
+# Unsere Gruppe arbeitet in der Datenbank "gruppe3" (jede Gruppe hat eine eigene),
+# per DATABASE-Env-Var ueberschreibbar (s. .env.example), Default bleibt "gruppe3".
+DATABASE = os.getenv("DATABASE", "gruppe3")
 
 # Praefix passend zur Gruppen-Datenbank.
-PREFIX = "gruppe3_"
+PREFIX = os.getenv("PREFIX", "gruppe3_")
 
 DIM_KREIS = PREFIX + "dim_kreis"
 DIM_JAHR = PREFIX + "dim_jahr"

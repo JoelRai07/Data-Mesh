@@ -46,7 +46,7 @@ import yaml
 
 from db import get_connection
 
-DATABASE = "gruppe3"
+DATABASE = os.getenv("DATABASE", "gruppe3")
 CONTRACT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "docs", "data_contract.yaml"
 )

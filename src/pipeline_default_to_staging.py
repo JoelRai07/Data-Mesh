@@ -62,6 +62,8 @@ WARUM "CREATE TABLE ... LIKE ..." STATT MANUELLER SPALTENLISTE?
 
 Ausfuehren:  .venv/Scripts/python.exe src/pipeline_default_to_staging.py
 """
+import os
+
 from db import get_connection
 from etl_state import (
     ensure_state_table,
@@ -71,9 +73,9 @@ from etl_state import (
     content_signature,
 )
 
-SOURCE_DATABASE = "default"
-DATABASE = "gruppe3"
-PREFIX = "gruppe3_"
+SOURCE_DATABASE = os.getenv("SOURCE_DATABASE", "default")
+DATABASE = os.getenv("DATABASE", "gruppe3")
+PREFIX = os.getenv("PREFIX", "gruppe3_")
 
 # source_table -> staging_table
 TABLES = {

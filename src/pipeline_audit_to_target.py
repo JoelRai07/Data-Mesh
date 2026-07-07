@@ -59,7 +59,7 @@ from etl_state import ensure_state_table, get_latest_state, record_state
 
 load_dotenv()
 
-DATABASE = "gruppe3"
+DATABASE = os.getenv("DATABASE", "gruppe3")
 JDBC_JAR_PATH = os.path.join(os.path.dirname(__file__), "utils", "ImpalaJDBC42.jar")
 JDBC_DRIVER_CLASS = "com.cloudera.impala.jdbc.Driver"  # verifiziert aus der Jar, s. Hinweis oben
 
