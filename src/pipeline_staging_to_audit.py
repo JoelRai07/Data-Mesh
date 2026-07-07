@@ -531,7 +531,7 @@ def audit_table_incremental(cur, name, staging_table, audit_table_name, select_l
 
 def _key_expr(alias, key_columns):
     """SQL-Ausdruck: fachlicher Business-Key mehrerer Spalten als EIN
-    String, fuer Vergleich/Join gegen CHANGED_KEYS_TABLE.row_key."""
+    String, fuer Join-Bedingungen zwischen Audit-/Staging-Tabelle."""
     cols = ", ".join(f"CAST({alias}.{c} AS STRING)" for c in key_columns)
     return f"CONCAT_WS('||', {cols})"
 
@@ -542,11 +542,18 @@ def _table_exists(cur, table_name):
 
 
 def _is_iceberg_table(cur, table_name):
+    """Prueft gezielt die Table-Parameter-Zeile 'table_type' = 'ICEBERG' aus
+    DESCRIBE FORMATTED (Impala kennt kein SHOW TBLPROPERTIES). Bei diesen
+    Zeilen liegt der Property-Name in Spalte 2, der Wert in Spalte 3 (Spalte 1
+    ist leer) - gezielter Spaltenvergleich statt einer Substring-Suche ueber
+    den gesamten Freitext-Dump, robuster gegenueber Format-Aenderungen."""
     cur.execute(f"DESCRIBE FORMATTED {table_name}")
-    return any(
-        "HiveIcebergSerDe" in " ".join(str(c) for c in row if c is not None)
-        for row in cur.fetchall()
-    )
+    for row in cur.fetchall():
+        key = (row[1] or "").strip() if len(row) > 1 else ""
+        if key == "table_type":
+            value = (row[2] or "").strip() if len(row) > 2 else ""
+            return value.upper() == "ICEBERG"
+    return False
 
 
 def ensure_iceberg_audit_table(cur, audit_table_name, staging_table):
@@ -554,17 +561,20 @@ def ensure_iceberg_audit_table(cur, audit_table_name, staging_table):
     Stellt sicher, dass audit_table_name als ICEBERG-Tabelle existiert - fuer
     das MERGE INTO/DELETE in audit_table_keyed_snapshot() zwingend
     erforderlich (Parquet/HDFS-Tabellen kennen kein zeilengenaues
-    UPDATE/DELETE, s. ADR.md). Drei Faelle:
+    UPDATE/DELETE, s. ADR.md).
       1) Tabelle existiert noch nicht -> frisch als Iceberg anlegen.
       2) Tabelle existiert bereits als Iceberg -> nichts zu tun (idempotent,
-         normalfall ab dem zweiten Lauf).
-      3) Tabelle existiert noch als Parquet (Alt-Stand von vor der Iceberg-
-         Umstellung) -> einmalig per CREATE TABLE ... STORED BY ICEBERG AS
-         SELECT verlustfrei migrieren, danach das Parquet-Original per
-         RENAME+DROP ersetzen (dasselbe Nie-Daten-verlieren-Swap-Muster wie
-         frueher in dieser Funktion selbst: zuerst das ALTE Original
-         umbenennen statt loeschen, danach erst die neue Tabelle einsetzen,
-         zuletzt erst die Kopie loeschen).
+         der Normalfall ab dem zweiten Lauf).
+      3) Tabelle existiert noch als Parquet -> FEHLER mit klarer Anleitung,
+         statt (wie in einer frueheren Version dieser Funktion) automatisch
+         und lautlos zu migrieren. Eine Storage-Format-Migration ist ein
+         einmaliger, strukturell heikler Vorgang (CTAS ueber die komplette
+         Tabelle + Rename-Swap) - das gehoert NICHT in den taeglichen
+         Pipeline-Lauf, wo ein Abbruch mitten in der Migration schwerer zu
+         diagnostizieren waere als ein expliziter, separat gestarteter
+         Migrationsschritt. Migration: s.
+         src/utils/migrate_audit_tables_to_iceberg.py (einmalig auszufuehren,
+         idempotent, mit sichtbarer Fortschrittsausgabe).
     """
     if not _table_exists(cur, audit_table_name):
         # "CREATE TABLE ... LIKE ... STORED BY ICEBERG" schlaegt fehl, wenn
@@ -578,20 +588,13 @@ def ensure_iceberg_audit_table(cur, audit_table_name, staging_table):
         )
         return
 
-    if _is_iceberg_table(cur, audit_table_name):
-        return
-
-    migrated_table = f"{audit_table_name}_iceberg"
-    old_table = f"{audit_table_name}_pre_iceberg"
-    cur.execute(f"DROP TABLE IF EXISTS {migrated_table}")
-    cur.execute(
-        f"CREATE TABLE {migrated_table} STORED BY ICEBERG TBLPROPERTIES('format-version'='2') "
-        f"AS SELECT * FROM {audit_table_name}"
-    )
-    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
-    cur.execute(f"ALTER TABLE {audit_table_name} RENAME TO {old_table}")
-    cur.execute(f"ALTER TABLE {migrated_table} RENAME TO {audit_table_name}")
-    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+    if not _is_iceberg_table(cur, audit_table_name):
+        raise RuntimeError(
+            f"{audit_table_name} existiert noch als Parquet-Tabelle, braucht fuer "
+            "MERGE INTO/DELETE aber Iceberg. Bitte einmalig "
+            "'.venv/Scripts/python.exe src/utils/migrate_audit_tables_to_iceberg.py' "
+            "ausfuehren und die Pipeline danach erneut starten."
+        )
 
 
 def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, select_list, base_where, key_columns):
@@ -605,14 +608,17 @@ def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, selec
        berechnen (server-seitig in Impala, FNV_HASH - dieselbe Technik wie
        content_signature(), nur JE ZEILE statt ueber die ganze Tabelle
        aggregiert) und mit dem zuletzt aufgezeichneten Hash je Key
-       vergleichen (gruppe3_etl_row_state, s. etl_state.py).
+       vergleichen (gruppe3_etl_row_state, s. etl_state.py). Diese
+       Zeilenhistorie wird bewusst weiterhin eigenstaendig gepflegt (nicht
+       nur aus der Iceberg-Audit-Tabelle abgeleitet) - sie wird auch
+       ausserhalb dieser Funktion gebraucht, u.a. vom Incremental Scheduler.
     2) Keys, die neu sind, einen anderen Hash haben ODER komplett aus der
        Quelle verschwunden sind (geloescht) landen in "keys_to_replace".
        Ist diese Menge leer, ist WIRKLICH keine einzige Zeile betroffen ->
        Lauf ueberspringen.
     3) Sonst: die betroffenen Keys in die kurzlebige Hilfstabelle
        CHANGED_KEYS_TABLE schreiben und GENAU diese Zeilen direkt in der
-       Audit-Tabelle bereinigen (s. WARUM-Abschnitt unten):
+       (jetzt Iceberg-)Audit-Tabelle bereinigen (s. WARUM-Abschnitt unten):
          a) DELETE fuer Keys, die zwar in keys_to_replace stehen, aber in der
             (ggf. per base_where gefilterten) Staging-Tabelle nicht mehr
             vorkommen - das sind die echt geloeschten Zeilen.
@@ -623,8 +629,8 @@ def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, selec
        Unveraenderte Zeilen (Key nicht in CHANGED_KEYS_TABLE) werden von
        beiden Statements gar nicht erst angefasst.
 
-    WARUM DIREKTES DELETE+MERGE STATT (wie fruehers) CREATE NEW TABLE +
-    RENAME-SWAP + DROP?
+    WARUM DIREKTES DELETE+MERGE STATT (wie ganz urspruenglich) CREATE NEW
+    TABLE + RENAME-SWAP + DROP?
       Der Swap-Umweg existierte nur, weil Parquet/HDFS-Tabellen in Impala
       kein zeilengenaues UPDATE/DELETE/MERGE kennen und ein INSERT OVERWRITE
       waehrend eines laufenden Scans derselben Tabelle Daten haette

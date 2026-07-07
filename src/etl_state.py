@@ -10,10 +10,11 @@ Aenderungsindikator, s. Doku in den beiden erstgenannten Modulen).
 
 Zusaetzlich (weiter unten): ROW_STATE_TABLE/CHANGED_KEYS_TABLE fuer echtes
 ZEILENGENAUES Incremental Merge bei Snapshot-Tabellen MIT Business-Key
-(bauland, bevoelkerungzahlen, gemeinden) - s. audit_table_keyed_snapshot in
-pipeline_staging_to_audit.py fuer die Verwendung und die Begruendung, warum
-das trotz Impalas fehlendem UPDATE/MERGE moeglich ist (CREATE NEW + SWAP +
-DROP statt In-Place-Update).
+(bauland, bevoelkerungzahlen) - s. audit_table_keyed_snapshot in
+pipeline_staging_to_audit.py fuer die Verwendung. Diese Zeilenhistorie wird
+bewusst eigenstaendig gepflegt (nicht nur aus der Iceberg-Audit-Tabelle
+abgeleitet), weil sie auch ausserhalb von audit_table_keyed_snapshot()
+gebraucht wird, u.a. fuer den Incremental Scheduler.
 
 WARUM EINE APPEND-ONLY-TABELLE STATT UPDATE/UPSERT DES STATE-EINTRAGS?
   Alle Tabellen dieses Projekts liegen STORED AS PARQUET auf normalem
@@ -144,7 +145,7 @@ def content_signature(cur, table_name, columns):
 
 # -----------------------------------------------------------------------------
 # ZEILENGENAUES INCREMENTAL MERGE fuer Snapshot-Tabellen MIT Business-Key
-# (bauland, bevoelkerungzahlen, gemeinden - s. audit_table_keyed_snapshot in
+# (bauland, bevoelkerungzahlen - s. audit_table_keyed_snapshot in
 # pipeline_staging_to_audit.py). content_signature() oben beantwortet nur
 # "hat sich IRGENDWO in der Tabelle etwas geaendert" (Tabellenebene). Die
 # beiden folgenden Tabellen ermoeglichen es, GENAU DIESE Zeilen zu bestimmen:
