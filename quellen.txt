@@ -1,0 +1,3 @@
+https://gist.github.com/leonbeckert/8332153a233a89156ecdbb3905579904 -> Deutsche Kreise und Bundesländer
+
+https://www.xn--datenbrse-57a.net/item/Liste_von_deutschen_Staedtenamen_.csv -> Deutsche Städte

@@ -107,6 +107,7 @@ s. dortiger Modul-Docstring fuer die fachliche Begruendung):
 Ausfuehren:  .venv/Scripts/python.exe src/pipeline_staging_to_audit.py
 """
 import os
+import re
 
 from db import get_connection
 from etl_state import (
@@ -257,100 +258,154 @@ def fix_known_values(expr, corrections, else_expr=None):
 
 
 # kreis (bauland + bevoelkerungzahlen): bekannte kaputte Werte (Ersatzzeichen
-# U+FFFD, s. Modul-Docstring), fuer die die urspruengliche Schreibweise
-# bekannt ist -> 1:1 auf die korrekte Schreibweise mappen statt die
-# kaputten Zeichen nur zu entfernen. Beide Staging-Tabellen referenzieren
-# dieselben deutschen Kreise/kreisfreien Staedte, daher ein gemeinsames Dict.
-KREIS_CORRECTIONS = {
-    "L�beck": "Luebeck",
-    "Neum�nster": "Neumuenster",
-    "Pl�n": "Ploen",
-    "Rendsburg-Eckernf�rde": "Rendsburg-Eckernfoerde",
-    "G�ttingen": "Goettingen",
-    "Wolfenb�ttel": "Wolfenbuettel",
-    "L�neburg": "Lueneburg",
-    "L�chow-Dannenberg": "Luechow-Dannenberg",
-    "Rotenburg (W�mme)": "Rotenburg (Wuemme)",
-    "Osnabr�ck": "Osnabrueck",
-    "D�sseldorf": "Duesseldorf",
-    "M�nchengladbach": "Moenchengladbach",
-    "M�lheim an der Ruhr": "Muelheim an der Ruhr",
-    "K�ln": "Koeln",
+# U+FFFD, s. Modul-Docstring) -> 1:1 auf die korrekte Schreibweise mappen
+# statt die kaputten Zeichen nur zu entfernen. Beide Staging-Tabellen
+# referenzieren dieselben deutschen Kreise/kreisfreien Staedte, daher ein
+# gemeinsames Dict.
+#
+# Die korrekte Schreibweise wird, wo moeglich, automatisch aus drei
+# Referenzlisten in src/utils/ ermittelt statt von Hand eingetragen (s.
+# _resolve_kreis_correction): german_cities.txt (Staedte/Orte, OSM-Liste),
+# german_regions.txt (Landkreise + kreisfreie Staedte) und
+# german_states.txt (die 16 Bundeslaender). Das Ersatzzeichen steht fuer
+# genau ein verlorenes Zeichen (Umlaut oder ß); der (Teil-)Name wird in
+# diesen Listen gesucht und der gefundene echte Name danach zu ASCII
+# transliteriert (ä/ö/ü/ß -> ae/oe/ue/ss).
+_UMLAUT_ASCII = [
+    ("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"),
+    ("Ä", "Ae"), ("Ö", "Oe"), ("Ü", "Ue"),
+]
+
+# Zeichen, die als Wortgrenze gelten, wenn ein zusammengesetzter Kreisname
+# (z.B. "Rendsburg-Eckernfoerde") wortweise durchsucht wird, weil er als
+# Ganzes keinem Referenzlisten-Eintrag entspricht.
+_WORD_SPLIT_PATTERN = re.compile(r"([^A-Za-zÀ-ÖØ-öø-ÿ�]+)")
+
+
+def _transliterate_umlauts_py(name):
+    for umlaut, replacement in _UMLAUT_ASCII:
+        name = name.replace(umlaut, replacement)
+    return name
+
+
+def _load_name_list(filename):
+    path = os.path.join(os.path.dirname(__file__), "utils", filename)
+    with open(path, encoding="utf-8") as f:
+        return [line.strip().strip('"') for line in f if line.strip()]
+
+
+# Gemeinsamer Namenspool aus Staedten, Kreisen/kreisfreien Staedten und
+# Bundeslaendern - deckt zusammen alle Ebenen ab, auf denen die kaputten
+# kreis-Werte tatsaechlich benannt sind (Stadt, Landkreis oder Bundesland).
+# dict.fromkeys() statt set() entfernt Duplikate (z.B. kreisfreie Staedte,
+# die sowohl in german_cities.txt als auch in german_regions.txt stehen),
+# ohne die Reihenfolge zu veraendern - sonst wuerde z.B. "Luebeck" durch den
+# doppelten Eintrag faelschlich als mehrdeutiger Treffer gelten.
+_REFERENCE_NAMES = list(dict.fromkeys(
+    _load_name_list("german_cities.txt")
+    + _load_name_list("german_regions.txt")
+    + _load_name_list("german_states.txt")
+))
+
+
+def _find_reference_match(pattern_str):
+    """Sucht im Namenspool (Staedte + Kreise + Bundeslaender) genau einen
+    Treffer fuer ein Regex-Pattern (mit '.' anstelle des Ersatzzeichens
+    U+FFFD). Bei mehreren Treffern wird der mit einem echten deutschen
+    Sonderzeichen an der Ersatzstelle bevorzugt (z.B. matcht "M.nster"
+    sowohl "Munster" als auch "Muenster" - da das Ersatzzeichen fuer einen
+    verlorenen Umlaut steht, ist der Treffer mit Umlaut hier die richtige
+    Wahl; bleibt es danach weiterhin mehrdeutig, gilt der Name als nicht
+    gefunden)."""
+    pattern = re.compile("^" + pattern_str + "$")
+    matches = [name for name in _REFERENCE_NAMES if pattern.match(name)]
+    if len(matches) > 1:
+        matches = [m for m in matches if re.search(r"[äöüßÄÖÜ]", m)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_kreis_correction(bad_name):
+    """Ermittelt fuer einen kaputten Kreisnamen (mit Ersatzzeichen U+FFFD
+    fuer verlorene Umlaute/ß) die korrekte Schreibweise ueber die
+    Referenzlisten (Staedte/Kreise/Bundeslaender) und transliteriert sie zu
+    ASCII. Erst wird der ganze Name gesucht (z.B. "Rotenburg (Wuemme)"),
+    dann - falls kein Treffer - Wort fuer Wort (z.B. bei zusammengesetzten
+    Kreisnamen wie "Rendsburg-Eckernfoerde", wo nur "Eckernfoerde" allein
+    als eigener Eintrag vorkommt). Gibt None zurueck, wenn sich keine
+    Entsprechung finden laesst (z.B. Namen von Berliner Bezirken oder
+    laengst aufgeloesten Landkreisen, die in keiner der drei Listen mehr
+    auftauchen)."""
+    whole_pattern = re.escape(bad_name).replace(re.escape("�"), ".")
+    whole_match = _find_reference_match(whole_pattern)
+    if whole_match is not None:
+        return _transliterate_umlauts_py(whole_match)
+
+    tokens = _WORD_SPLIT_PATTERN.split(bad_name)
+    resolved_any = False
+    for i, token in enumerate(tokens):
+        if "�" not in token:
+            continue
+        token_pattern = re.escape(token).replace(re.escape("�"), ".")
+        token_match = _find_reference_match(token_pattern)
+        if token_match is None:
+            return None
+        tokens[i] = token_match
+        resolved_any = True
+    if not resolved_any:
+        return None
+    return _transliterate_umlauts_py("".join(tokens))
+
+
+# Kaputte Namen, fuer die keine der drei Referenzlisten einen Eintrag hat -
+# entweder Berliner Bezirke (Berlin steht in german_regions.txt nur als
+# Ganzes, ohne Bezirksebene) oder laengst im Zuge von Kreisgebietsreformen
+# aufgeloeste Landkreise (Sachsen 2008, Sachsen-Anhalt 2007,
+# Mecklenburg-Vorpommern 2011) - hier bleibt die korrekte Schreibweise von
+# Hand gepflegt.
+MANUAL_KREIS_CORRECTIONS = {
     "St�dteregion Aachen": "Staedteregion Aachen",
-    "D�ren": "Dueren",
-    "M�nster": "Muenster",
-    "G�tersloh": "Guetersloh",
-    "H�xter": "Hoexter",
-    "Minden-L�bbecke": "Minden-Luebbecke",
-    "M�rkischer Kreis": "Maerkischer Kreis",
-    "Bergstra�e": "Bergstrasse",
-    "Gro�-Gerau": "Gross-Gerau",
-    # zusaetzlich in gruppe3_staging_bevoelkerungzahlen.kreis gefunden:
-    "Aschersleben-Sta�furt": "Aschersleben-Stassfurt",
-    "Eifelkreis Bitburg-Pr�m": "Eifelkreis Bitburg-Pruem",
     "Berlin-Treptow-K�penick": "Berlin-Treptow-Koepenick",
-    "Dessau-Ro�lau": "Dessau-Rosslau",
-    "Kyffh�userkreis": "Kyffhaeuserkreis",
-    "Wei�enburg-Gunzenhausen": "Weissenburg-Gunzenhausen",
-    "M�nchen": "Muenchen",
-    "G�ppingen": "Goeppingen",
-    "Ha�berge": "Hassberge",
-    "Wei�enfels": "Weissenfels",
-    "B�blingen": "Boeblingen",
-    "Saarbr�cken": "Saarbruecken",
-    "Wei�eritzkreis": "Weisseritzkreis",
-    "G�nzburg": "Guenzburg",
-    "Werra-Mei�ner-Kreis": "Werra-Meissner-Kreis",
-    "T�bingen": "Tuebingen",
-    "F�rth": "Fuerth",
-    "Gie�en": "Giessen",
-    "Rh�n-Grabfeld": "Rhoen-Grabfeld",
-    "Sch�nebeck": "Schoenebeck",
-    "Erlangen-H�chstadt": "Erlangen-Hoechstadt",
-    "Mei�en": "Meissen",
-    "Unterallg�u": "Unterallgaeu",
-    "N�rnberger Land": "Nuernberger Land",
-    "Teltow-Fl�ming": "Teltow-Flaeming",
-    "L�rrach": "Loerrach",
-    "S�chsische Schweiz": "Saechsische Schweiz",
-    "S�dliche Weinstra�e": "Suedliche Weinstrasse",
-    "N�rnberg": "Nuernberg",
     "Berlin-Neuk�lln": "Berlin-Neukoelln",
-    "Berlin-Tempelhof-Sch�neberg": "Berlin-Tempelhof-Schoeneberg",
-    "Ostallg�u": "Ostallgaeu",
-    "D�beln": "Doebeln",
-    "Neustadt an der Weinstra�e": "Neustadt an der Weinstrasse",
-    "R�gen": "Ruegen",
-    "Vorpommern-R�gen": "Vorpommern-Ruegen",
-    "M�hldorf a.Inn": "Muehldorf a.Inn",
-    "M�rkisch-Oderland": "Maerkisch-Oderland",
-    "Oberallg�u": "Oberallgaeu",
-    "Mansfeld-S�dharz": "Mansfeld-Suedharz",
-    "Landkreis M�ritz": "Landkreis Mueritz",
-    "Kempten (Allg�u)": "Kempten (Allgaeu)",
-    "G�rlitz": "Goerlitz",
-    "Schw�bisch Hall": "Schwaebisch Hall",
-    "G�strow": "Guestrow",
-    "Bad D�rkheim": "Bad Duerkheim",
-    "L�bau-Zittau": "Loebau-Zittau",
-    "S�dwestpfalz": "Suedwestpfalz",
-    "B�rdekreis": "Boerdekreis",
-    "B�rde": "Boerde",
-    "Riesa-Gro�enhain": "Riesa-Grossenhain",
-    "W�rzburg": "Wuerzburg",
-    "S�mmerda": "Soemmerda",
-    "Baden-W�rttemberg": "Baden-Wuerttemberg",
-    "Alt�tting": "Altoetting",
-    "Rhein-Hunsr�ck-Kreis": "Rhein-Hunsrueck-Kreis",
-    "Spree-Nei�e": "Spree-Neisse",
-    "Zweibr�cken": "Zweibruecken",
-    "Th�ringen": "Thueringen",
-    "Bad T�lz-Wolfratshausen": "Bad Toelz-Wolfratshausen",
-    "Eichst�tt": "Eichstaett",
-    "F�rstenfeldbruck": "Fuerstenfeldbruck",
-    "K�then": "Koethen",
-    "S�chsische Schweiz-Osterzgebirge": "Saechsische Schweiz-Osterzgebirge",
+    "Wei�eritzkreis": "Weisseritzkreis",  # aufgeloest 2008 (Sachsen)
+    "S�chsische Schweiz": "Saechsische Schweiz",  # aufgeloest 2008 (Sachsen)
+    "B�rdekreis": "Boerdekreis",  # aufgeloest 2007 (Sachsen-Anhalt)
+    "R�gen": "Ruegen",  # aufgeloest 2011 (Mecklenburg-Vorpommern)
+    "Landkreis M�ritz": "Landkreis Mueritz",  # aufgeloest 2011 (Mecklenburg-Vorpommern)
 }
+
+
+def _discover_bad_kreis_values(cur):
+    """Ermittelt zur Laufzeit die tatsaechlich in gruppe3_staging_bauland UND
+    gruppe3_staging_bevoelkerungzahlen vorkommenden kreis-Werte mit dem
+    Ersatzzeichen U+FFFD - statt eine feste Liste bereits bekannter kaputter
+    Werte im Code zu pflegen, die bei neuen Staging-Laeufen veralten koennte.
+    TRIM + SPLIT_PART(..., ',', 1) entspricht exakt strip_after_comma(): nur
+    so liegen die entdeckten Werte in derselben Form vor, in der
+    fix_known_values() sie spaeter vergleicht (s. dortige Warnung)."""
+    bad_values = set()
+    for table in (STAGING_TABLES["bauland"], STAGING_TABLES["bevoelkerungzahlen"]):
+        cur.execute(
+            f"SELECT DISTINCT TRIM(SPLIT_PART(kreis, ',', 1)) FROM {table} "
+            "WHERE kreis LIKE '%�%'"
+        )
+        bad_values.update(row[0] for row in cur.fetchall() if row[0])
+    return sorted(bad_values)
+
+
+def _build_kreis_corrections(cur):
+    corrections = dict(MANUAL_KREIS_CORRECTIONS)
+    for bad_name in _discover_bad_kreis_values(cur):
+        if bad_name in corrections:
+            continue
+        good_name = _resolve_kreis_correction(bad_name)
+        if good_name is None:
+            raise RuntimeError(
+                f"KREIS_CORRECTIONS: '{bad_name}' (aus den Staging-Tabellen) "
+                "nicht in den Referenzlisten gefunden - ggf. in "
+                "MANUAL_KREIS_CORRECTIONS aufnehmen."
+            )
+        corrections[bad_name] = good_name
+    return corrections
 
 
 # gruppe3_staging_klimadaten.city: manche deutschen Staedte sind unter ihrem
@@ -370,36 +425,42 @@ CITY_NAME_CORRECTIONS = {
 
 
 # Je Thema: SQL-Ausdruck je zu bereinigender Spalte + optionaler WHERE-Filter.
-AUDIT_RULES = {
-    "bauland": {
-        "columns": {
-            "kreis": fix_known_values(strip_after_comma("kreis"), KREIS_CORRECTIONS),
-            "merkmal": fix_known_values(trim("merkmal"), BAULAND_MERKMAL_CORRECTIONS),
+# Wird erst zur Laufzeit gebaut (build_audit_rules(cur), s.u.), weil
+# KREIS_CORRECTIONS von den tatsaechlich in den Staging-Tabellen vorkommenden
+# kaputten Werten abhaengt (s. _discover_bad_kreis_values) - dafuer wird
+# bereits ein offener Cursor gebraucht, den es auf Modulebene noch nicht gibt.
+def build_audit_rules(cur):
+    kreis_corrections = _build_kreis_corrections(cur)
+    return {
+        "bauland": {
+            "columns": {
+                "kreis": fix_known_values(strip_after_comma("kreis"), kreis_corrections),
+                "merkmal": fix_known_values(trim("merkmal"), BAULAND_MERKMAL_CORRECTIONS),
+            },
+            "where": None,
         },
-        "where": None,
-    },
-    "bevoelkerungzahlen": {
-        "columns": {
-            "kreis": fix_known_values(strip_after_comma("kreis"), KREIS_CORRECTIONS),
+        "bevoelkerungzahlen": {
+            "columns": {
+                "kreis": fix_known_values(strip_after_comma("kreis"), kreis_corrections),
+            },
+            "where": None,
         },
-        "where": None,
-    },
-    "gemeinden": {
-        "columns": {
-            "municipality_name": trim(transliterate_umlauts("municipality_name")),
-            "district_kreis": transliterate_umlauts(strip_after_comma("district_kreis")),
+        "gemeinden": {
+            "columns": {
+                "municipality_name": trim(transliterate_umlauts("municipality_name")),
+                "district_kreis": transliterate_umlauts(strip_after_comma("district_kreis")),
+            },
+            "where": None,
         },
-        "where": None,
-    },
-    "klimadaten": {
-        "columns": {
-            "city": transliterate_umlauts(fix_known_values(trim("city"), CITY_NAME_CORRECTIONS)),
-            "latitude": compass_to_signed_decimal("latitude", "S"),
-            "longitude": compass_to_signed_decimal("longitude", "W"),
+        "klimadaten": {
+            "columns": {
+                "city": transliterate_umlauts(fix_known_values(trim("city"), CITY_NAME_CORRECTIONS)),
+                "latitude": compass_to_signed_decimal("latitude", "S"),
+                "longitude": compass_to_signed_decimal("longitude", "W"),
+            },
+            "where": "country = 'Germany'",
         },
-        "where": "country = 'Germany'",
-    },
-}
+    }
 
 
 def get_columns(cur, table_name):
@@ -624,10 +685,10 @@ def audit_table_snapshot(cur, name, staging_table, audit_table_name, select_list
     return cur.fetchone()[0], True
 
 
-def audit_table(cur, name):
+def audit_table(cur, name, audit_rules):
     staging_table = STAGING_TABLES[name]
     audit_table_name = AUDIT_TABLES[name]
-    rule = AUDIT_RULES[name]
+    rule = audit_rules[name]
 
     cur.execute(f"CREATE TABLE IF NOT EXISTS {audit_table_name} LIKE {staging_table} STORED AS PARQUET")
 
@@ -651,9 +712,11 @@ def main():
     ensure_row_state_table(cur)
     print(f"Datenbank: {DATABASE}\n")
 
+    audit_rules = build_audit_rules(cur)
+
     for name in STAGING_TABLES:
         print(f"Audit {STAGING_TABLES[name]} -> {AUDIT_TABLES[name]} ...")
-        row_count, changed = audit_table(cur, name)
+        row_count, changed = audit_table(cur, name, audit_rules)
         if changed:
             print(f"  -> OK ({row_count} Zeilen, aktualisiert)")
         else:
