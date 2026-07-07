@@ -58,7 +58,15 @@ Hadoop-Version mit, die das noch braucht. Das ist eine harte
 Inkompatibilitaet, keine Konfigurationsfrage.
 
 **Loesung:** Zusaetzlich **Eclipse Temurin JDK 17** installieren (die alte
-JDK-Version muss nicht entfernt werden, beide koennen parallel existieren).
+JDK-Version muss nicht entfernt werden, beide koennen parallel existieren),
+Pfad als `JAVA_HOME_JDK17` in `.env` eintragen (s. `.env.example`).
+**Update 07.07.:** `pipeline_audit_to_target.py` setzt `JAVA_HOME`/`PATH`
+daraus inzwischen selbst zu Laufzeitbeginn (vor dem `pyspark`-Import, gleiche
+Technik wie schon laenger in `scheduler.py`) - kein manuelles Setzen der
+Umgebungsvariable vor dem Start mehr noetig, `.env` mit `JAVA_HOME_JDK17`
+genuegt. Zuvor griff das nur, wenn `scheduler.py` der Aufrufer war; ein
+direkter Aufruf von `pipeline_audit_to_target.py` (s. dessen eigene
+"Ausfuehren"-Zeile) ist jetzt ebenfalls abgedeckt.
 `JAVA_HOME`/`PATH` muessen beim Start von Spark auf das JDK-17-Verzeichnis
 zeigen, nicht auf das System-Default.
 

@@ -50,14 +50,32 @@ import math
 import os
 
 from dotenv import load_dotenv
+
+load_dotenv()
+
+# JAVA_HOME_JDK17 MUSS gesetzt sein, BEVOR pyspark importiert wird - Spark
+# startet seine JVM beim ersten SparkSession-Aufruf mit dem zu diesem
+# Zeitpunkt aktuellen JAVA_HOME/PATH. Ohne diesen Block greift bei einem
+# direkten Aufruf dieses Skripts (s. "Ausfuehren" oben) das System-Default-
+# JDK, das bei JDK >= 23/24 an einer entfernten Hadoop-Security-API
+# (Subject.getSubject) scheitert - "UnsupportedOperationException: getSubject
+# is not supported" (s. docs/spark_stolpersteine.md, Stolperstein 1).
+# scheduler.py setzt exakt dasselbe bereits VOR dem Import dieses Moduls
+# (fuer den Fall, dass scheduler.py der Aufrufer ist) - hier zusaetzlich
+# noetig fuer den direkten, eigenstaendigen Aufruf dieser Datei. Pfad kommt
+# bewusst aus der .env (kein hartkodierter Pfad, s. .env.example) - ist die
+# Variable nicht gesetzt, bleibt das System-JAVA_HOME unangetastet.
+JAVA_HOME = os.getenv("JAVA_HOME_JDK17")
+if JAVA_HOME and os.path.isdir(JAVA_HOME):
+    os.environ["JAVA_HOME"] = JAVA_HOME
+    os.environ["PATH"] = os.path.join(JAVA_HOME, "bin") + os.pathsep + os.environ.get("PATH", "")
+
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType
 
 from db import get_connection
 from etl_state import ensure_state_table, get_latest_state, record_state
-
-load_dotenv()
 
 DATABASE = os.getenv("DATABASE", "gruppe3")
 JDBC_JAR_PATH = os.path.join(os.path.dirname(__file__), "utils", "ImpalaJDBC42.jar")

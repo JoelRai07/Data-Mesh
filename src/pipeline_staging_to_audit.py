@@ -536,6 +536,64 @@ def _key_expr(alias, key_columns):
     return f"CONCAT_WS('||', {cols})"
 
 
+def _table_exists(cur, table_name):
+    cur.execute(f"SHOW TABLES LIKE '{table_name}'")
+    return len(cur.fetchall()) > 0
+
+
+def _is_iceberg_table(cur, table_name):
+    cur.execute(f"DESCRIBE FORMATTED {table_name}")
+    return any(
+        "HiveIcebergSerDe" in " ".join(str(c) for c in row if c is not None)
+        for row in cur.fetchall()
+    )
+
+
+def ensure_iceberg_audit_table(cur, audit_table_name, staging_table):
+    """
+    Stellt sicher, dass audit_table_name als ICEBERG-Tabelle existiert - fuer
+    das MERGE INTO/DELETE in audit_table_keyed_snapshot() zwingend
+    erforderlich (Parquet/HDFS-Tabellen kennen kein zeilengenaues
+    UPDATE/DELETE, s. ADR.md). Drei Faelle:
+      1) Tabelle existiert noch nicht -> frisch als Iceberg anlegen.
+      2) Tabelle existiert bereits als Iceberg -> nichts zu tun (idempotent,
+         normalfall ab dem zweiten Lauf).
+      3) Tabelle existiert noch als Parquet (Alt-Stand von vor der Iceberg-
+         Umstellung) -> einmalig per CREATE TABLE ... STORED BY ICEBERG AS
+         SELECT verlustfrei migrieren, danach das Parquet-Original per
+         RENAME+DROP ersetzen (dasselbe Nie-Daten-verlieren-Swap-Muster wie
+         frueher in dieser Funktion selbst: zuerst das ALTE Original
+         umbenennen statt loeschen, danach erst die neue Tabelle einsetzen,
+         zuletzt erst die Kopie loeschen).
+    """
+    if not _table_exists(cur, audit_table_name):
+        # "CREATE TABLE ... LIKE ... STORED BY ICEBERG" schlaegt fehl, wenn
+        # die Quelltabelle selbst kein Iceberg ist ("cannot be cloned into
+        # an Iceberg table") - deshalb stattdessen CTAS mit WHERE 1=0: uebernimmt
+        # Spalten/Typen 1:1, aber keine Zeilen (die erste MERGE INTO in
+        # audit_table_keyed_snapshot() befuellt die Tabelle).
+        cur.execute(
+            f"CREATE TABLE {audit_table_name} STORED BY ICEBERG "
+            f"TBLPROPERTIES('format-version'='2') AS SELECT * FROM {staging_table} WHERE 1=0"
+        )
+        return
+
+    if _is_iceberg_table(cur, audit_table_name):
+        return
+
+    migrated_table = f"{audit_table_name}_iceberg"
+    old_table = f"{audit_table_name}_pre_iceberg"
+    cur.execute(f"DROP TABLE IF EXISTS {migrated_table}")
+    cur.execute(
+        f"CREATE TABLE {migrated_table} STORED BY ICEBERG TBLPROPERTIES('format-version'='2') "
+        f"AS SELECT * FROM {audit_table_name}"
+    )
+    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+    cur.execute(f"ALTER TABLE {audit_table_name} RENAME TO {old_table}")
+    cur.execute(f"ALTER TABLE {migrated_table} RENAME TO {audit_table_name}")
+    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+
+
 def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, select_list, base_where, key_columns):
     """
     Echtes ZEILENGENAUES Incremental Merge fuer Snapshot-Tabellen MIT
@@ -553,30 +611,28 @@ def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, selec
        Ist diese Menge leer, ist WIRKLICH keine einzige Zeile betroffen ->
        Lauf ueberspringen.
     3) Sonst: die betroffenen Keys in die kurzlebige Hilfstabelle
-       CHANGED_KEYS_TABLE schreiben und die neue Audit-Tabelle aus zwei
-       Teilen zusammensetzen:
-         a) alle BISHERIGEN Audit-Zeilen, deren Key NICHT betroffen ist
-            (unangetastet uebernommen, kein erneutes Bereinigen noetig)
-         b) frisch bereinigte Zeilen (dieselben AUDIT_RULES/select_list wie
-            bisher) aus der Staging-Tabelle fuer GENAU die betroffenen Keys
-       Geloeschte Keys fallen dabei automatisch weg: sie sind in (a)
-       ausgeschlossen (Key ist betroffen) und liefern in (b) keine Treffer
-       (Key existiert in der Staging-Tabelle nicht mehr).
+       CHANGED_KEYS_TABLE schreiben und GENAU diese Zeilen direkt in der
+       Audit-Tabelle bereinigen (s. WARUM-Abschnitt unten):
+         a) DELETE fuer Keys, die zwar in keys_to_replace stehen, aber in der
+            (ggf. per base_where gefilterten) Staging-Tabelle nicht mehr
+            vorkommen - das sind die echt geloeschten Zeilen.
+         b) MERGE INTO fuer alle noch vorhandenen betroffenen Keys: bereits
+            bekannte Keys werden per UPDATE SET aktualisiert, neue Keys per
+            INSERT ergaenzt - MERGE unterscheidet das automatisch anhand der
+            Join-Bedingung, das ist in Python nicht mehr extra zu trennen.
+       Unveraenderte Zeilen (Key nicht in CHANGED_KEYS_TABLE) werden von
+       beiden Statements gar nicht erst angefasst.
 
-    WARUM "CREATE NEW TABLE + RENAME-SWAP + DROP" STATT EINFACH
-    INSERT OVERWRITE TABLE audit SELECT ... FROM audit ...?
-      Impala kann nicht sicher aus einer Tabelle LESEN, waehrend dieselbe
-      Tabelle per INSERT OVERWRITE geleert/ueberschrieben wird (Race
-      zwischen dem laufenden Scan und dem Truncate-Schritt von OVERWRITE -
-      im schlechtesten Fall werden 0 Zeilen gelesen, das Ergebnis waere dann
-      nur noch der neue Teil, der alte Bestand waere verloren). Stattdessen
-      wird das Merge-Ergebnis in eine NEUE Tabelle geschrieben
-      (CREATE TABLE ... AS SELECT), und die Tabellen werden erst DANACH per
-      ALTER TABLE ... RENAME TO getauscht. Reihenfolge bewusst so gewaehlt,
-      dass zu keinem Zeitpunkt Daten verloren gehen koennten, falls der
-      Prozess mittendrin abbricht: zuerst wird das ALTE Original umbenannt
-      (nie geloescht, solange die neue Tabelle nicht sicher an ihrem Platz
-      ist), erst zuletzt wird die alte Kopie geloescht.
+    WARUM DIREKTES DELETE+MERGE STATT (wie fruehers) CREATE NEW TABLE +
+    RENAME-SWAP + DROP?
+      Der Swap-Umweg existierte nur, weil Parquet/HDFS-Tabellen in Impala
+      kein zeilengenaues UPDATE/DELETE/MERGE kennen und ein INSERT OVERWRITE
+      waehrend eines laufenden Scans derselben Tabelle Daten haette
+      verlieren koennen (Race zwischen Scan und Truncate). audit_table_name
+      ist inzwischen eine ICEBERG-Tabelle (s. ensure_iceberg_audit_table) -
+      Iceberg fuehrt DELETE/MERGE INTO als eigene, atomare Snapshot-Commits
+      aus (kein Truncate, kein Torn Read), macht den kompletten
+      CREATE+RENAME+DROP-Tanz damit ueberfluessig. Details/Begruendung: ADR.md.
     """
     all_columns = get_columns(cur, staging_table)
     key_expr_plain = "CONCAT_WS('||', " + ", ".join(f"CAST({c} AS STRING)" for c in key_columns) + ")"
@@ -615,26 +671,37 @@ def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, selec
     load_changed_keys(cur, keys_to_replace)
 
     where_clause = f" WHERE {base_where}" if base_where else ""
-    key_expr_audit = _key_expr("a", key_columns)
+    key_expr_audit = _key_expr("t", key_columns)
     key_expr_staging = _key_expr("s", key_columns)
-    incoming_table = f"{audit_table_name}_incoming"
-    old_table = f"{audit_table_name}_old"
+    key_expr_src = _key_expr("src", key_columns)
 
-    cur.execute(f"DROP TABLE IF EXISTS {incoming_table}")
+    # a) Echt geloeschte Keys entfernen: in CHANGED_KEYS_TABLE, aber in der
+    # (per base_where gefilterten) Staging-Tabelle nicht mehr vorhanden.
+    # Impalas Iceberg-DELETE verlangt "DELETE <alias> FROM <table> <alias>
+    # WHERE ..." - "DELETE FROM <table> <alias> WHERE ..." (ohne fuehrenden
+    # Alias) ist ein Syntaxfehler.
     cur.execute(
-        f"CREATE TABLE {incoming_table} STORED AS PARQUET AS "
-        f"SELECT * FROM {audit_table_name} a "
-        f"LEFT ANTI JOIN {CHANGED_KEYS_TABLE} c ON {key_expr_audit} = c.row_key "
-        f"UNION ALL "
+        f"DELETE t FROM {audit_table_name} t WHERE {key_expr_audit} IN ("
+        f"SELECT c.row_key FROM {CHANGED_KEYS_TABLE} c "
+        f"LEFT ANTI JOIN (SELECT * FROM {staging_table}{where_clause}) s "
+        f"ON c.row_key = {key_expr_staging}"
+        f")"
+    )
+
+    # b) Betroffene, weiterhin vorhandene Keys aktualisieren/einfuegen.
+    non_key_columns = [c for c in all_columns if c not in key_columns]
+    update_set = ", ".join(f"{c} = src.{c}" for c in non_key_columns)
+    insert_columns = ", ".join(all_columns)
+    insert_values = ", ".join(f"src.{c}" for c in all_columns)
+    cur.execute(
+        f"MERGE INTO {audit_table_name} t USING ("
         f"SELECT {select_list} FROM {staging_table} s "
         f"LEFT SEMI JOIN {CHANGED_KEYS_TABLE} c ON {key_expr_staging} = c.row_key"
         f"{where_clause}"
+        f") src ON {key_expr_audit} = {key_expr_src} "
+        f"WHEN MATCHED THEN UPDATE SET {update_set} "
+        f"WHEN NOT MATCHED THEN INSERT ({insert_columns}) VALUES ({insert_values})"
     )
-
-    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
-    cur.execute(f"ALTER TABLE {audit_table_name} RENAME TO {old_table}")
-    cur.execute(f"ALTER TABLE {incoming_table} RENAME TO {audit_table_name}")
-    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
 
     # Neue/geaenderte Keys mit ihrem aktuellen Hash aufzeichnen, geloeschte
     # Keys als Tombstone (row_hash=None) - sonst wuerden sie bei jedem
@@ -690,7 +757,14 @@ def audit_table(cur, name, audit_rules):
     audit_table_name = AUDIT_TABLES[name]
     rule = audit_rules[name]
 
-    cur.execute(f"CREATE TABLE IF NOT EXISTS {audit_table_name} LIKE {staging_table} STORED AS PARQUET")
+    # KEY_COLUMNS-Tabellen (bauland, bevoelkerungzahlen) brauchen DELETE/MERGE
+    # INTO in audit_table_keyed_snapshot() -> ICEBERG statt Parquet (s. ADR.md).
+    # Alle anderen Tabellen (gemeinden, klimadaten) werden nur per INSERT
+    # OVERWRITE/INSERT INTO geschrieben - dafuer reicht weiterhin Parquet.
+    if name in KEY_COLUMNS:
+        ensure_iceberg_audit_table(cur, audit_table_name, staging_table)
+    else:
+        cur.execute(f"CREATE TABLE IF NOT EXISTS {audit_table_name} LIKE {staging_table} STORED AS PARQUET")
 
     columns = get_columns(cur, staging_table)
     select_list = build_select_list(columns, rule["columns"])

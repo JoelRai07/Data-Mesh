@@ -11,6 +11,7 @@ Begründung → Trade-off.**
 | Datei | Frage, die sie beantwortet |
 |---|---|
 | [README.md](../README.md) | „Wie ist das Projekt aufgebaut, wie führe ich es aus, wie lese ich den Code?" (Einstiegspunkt) |
+| [ADR.md](../ADR.md) | „Warum Apache Iceberg für den Bauland/Bevölkerung-Merge — und was hat das ersetzt?" (Vertiefung zu ADR-8) |
 | [data_contract.yaml](data_contract.yaml) | „Was bekomme ich als **Konsument** des Datenprodukts und wie nutze ich es korrekt?" |
 | [datenmodell_begruendung.md](datenmodell_begruendung.md) | „Warum sieht das Datenmodell (Star-Schema) so aus?" (Deliverable 1) |
 | **dieses Dokument** | „Warum ist die Lösung insgesamt so gebaut — und was galt früher?" |
@@ -79,13 +80,13 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 **Warum:** Deterministisch und erklärbar; der Distanz-Join scheiterte zunächst an zerstörten Koordinaten (s. Problem P3) und mehrdeutige Kurznamen („Frankfurt", „Oldenburg") wären beim Fuzzy-Match reine Raterei.
 **Trade-off:** 7 Städte bleiben unangebunden; über eine Korrekturliste nachschärfbar. **Achtung:** [datenmodell_begruendung.md](datenmodell_begruendung.md) beschreibt noch den alten Distanz-Ansatz → TODO.
 
-### ADR-8 · Incremental Loading mit drei Strategien + append-only State *(neu 06.07., Duc)*
+### ADR-8 · Incremental Loading mit drei Strategien + append-only State *(neu 06.07., Duc; Punkt 2 aktualisiert 07.07.)*
 **Kontext:** Der Scheduler läuft täglich; ein täglicher Full Load von 8,6 Mio. Klimazeilen wäre Verschwendung. Impala auf Parquet kennt **kein** UPDATE/DELETE/MERGE.
 **Entscheidung:** Je Tabellenart die passende Strategie (Vorlesung 3, Incremental-Loader-Pattern):
   1. **Wasserzeichen** (`klimadaten`, echte Zeitreihe über `dt`): nur neuere Zeilen anhängen.
-  2. **Zeilengenauer Key-Merge** (`bauland`, `bevoelkerungzahlen` — verlässlicher Business-Key): FNV-Hash je Zeile, nur neue/geänderte/gelöschte Keys ersetzen — per `CREATE TABLE … AS SELECT` + Rename-Swap + Drop, weil Impala kein MERGE hat und nicht sicher aus einer Tabelle lesen kann, die es gerade überschreibt.
+  2. **Zeilengenauer Key-Merge** (`bauland`, `bevoelkerungzahlen` — verlässlicher Business-Key): FNV-Hash je Zeile, nur neue/geänderte/gelöschte Keys ersetzen. **Update 07.07.:** `gruppe3_audit_bauland`/`gruppe3_audit_bevoelkerungzahlen` laufen jetzt als **Apache-Iceberg**-Tabellen (statt Parquet) — echtes `DELETE`/`MERGE INTO` statt des früheren `CREATE TABLE … AS SELECT` + Rename-Swap + Drop. Details/Begründung/Verifikation: [ADR.md](../ADR.md).
   3. **Inhalts-Prüfsumme** (`gemeinden` — kein NULL-freier Key): Full Refresh nur bei geänderter Prüfsumme.
-  Der Zustand liegt in `gruppe3_etl_state`/`_row_state` — **append-only** (jüngster Eintrag gewinnt), weil Zeilen-Updates in Impala/Parquet nicht existieren. Stufe 3 überspringt den ganzen Spark-Lauf, wenn kein Audit-Stand neuer ist als der letzte Ziel-Build.
+  Der Zustand liegt in `gruppe3_etl_state`/`_row_state` — **append-only** (jüngster Eintrag gewinnt), weil Zeilen-Updates in Impala/Parquet nicht existieren (gilt weiterhin für diese State-Tabellen selbst, die bleiben Parquet). Stufe 3 überspringt den ganzen Spark-Lauf, wenn kein Audit-Stand neuer ist als der letzte Ziel-Build.
 **Warum gemeinden nicht zeilengenau:** live getestet — NULL-behaftete Keys kollidierten, ein Reset-Folgelauf erkannte fälschlich Änderungen; bei ~11 k Zeilen ist die Prüfsumme robust und schnell genug.
 **Trade-off:** Deutlich mehr Komplexität + State-Tabellen. **Bekannter Bug:** das Wasserzeichen wird bei jedem Lauf neu geschrieben → der Skip von Stufe 3 greift im Komplettlauf nie (s. TODO, Fix ist ein Einzeiler).
 
