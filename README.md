@@ -34,7 +34,8 @@ gruppe3_staging_*          (unveränderte Rohkopie in unserer Datenbank)
       │  (2) pipeline_staging_to_audit.py        AUDIT   – impyla / Impala-SQL
       ▼       Bereinigung (Encoding-Korrekturen, Transliteration, Koordinaten,
               Filter Germany); inkrementell: Wasserzeichen (Klima) · zeilengenauer
-              Business-Key-Merge (Bauland/Bevölkerung) · Prüfsumme (Gemeinden)
+              Business-Key-Merge via Iceberg MERGE/DELETE (Bauland/Bevölkerung)
+              · Prüfsumme (Gemeinden)
 gruppe3_audit_*            (bereinigte, fachlich saubere Basis)
       │
       │  (3) pipeline_audit_to_target.py         PUBLISH – Apache Spark (PySpark)
@@ -70,8 +71,11 @@ s. [src/etl_state.py](src/etl_state.py)). Drei Strategien, je nach Tabellenart:
 - **Wasserzeichen** (Klimadaten, echte Zeitreihe über `dt`): nur neuere Zeilen
   werden angehängt — kein täglicher Full-Rewrite von 8,6 Mio. Zeilen.
 - **Zeilengenauer Merge** (Bauland, Bevölkerung — Tabellen mit Business-Key):
-  FNV-Hash je Zeile, nur neue/geänderte/gelöschte Keys werden ersetzt
-  (per `CREATE TABLE … AS SELECT` + Rename-Swap, da Impala kein MERGE hat).
+  FNV-Hash je Zeile, nur neue/geänderte/gelöschte Keys werden ersetzt.
+  Die beiden Audit-Tabellen laufen dafür seit 07.07. als
+  **Apache-Iceberg-Tabellen** — echtes `DELETE` + `MERGE INTO` statt des
+  früheren `CREATE TABLE … AS SELECT` + Rename-Swap (Parquet in Impala kennt
+  kein UPDATE/MERGE). Begründung, Verifikation und Historie: [ADR.md](ADR.md).
 - **Inhalts-Prüfsumme** (Gemeinden — kein verlässlicher Key): Full Refresh nur,
   wenn sich die Prüfsumme der Quelle geändert hat.
 
@@ -83,6 +87,9 @@ jeweiligen Skripte.
 ```
 Data-Mesh/
 ├── README.md                        # Diese Datei
+├── ADR.md                           # Vertiefungs-ADR: Apache Iceberg für den Audit-Merge (ersetzt Rename-Swap)
+├── TODO.md                          # Einzige Aufgabenliste (offene Punkte)
+├── quellen.txt                      # Herkunft der Referenzlisten (Städte/Kreise)
 ├── requirements.txt                 # Python-Abhängigkeiten (impyla, pyspark, APScheduler, dotenv, PyYAML)
 ├── .env.example                     # Vorlage für Zugangsdaten → kopieren nach .env
 ├── .env                             # Echte Zugangsdaten (NICHT eingecheckt)
@@ -104,6 +111,10 @@ Data-Mesh/
 │       ├── test_connection.py       # Prüft die Impala-Verbindung
 │       ├── inspect_tables.py        # Zeigt Schema + Zeilenzahl der Rohtabellen
 │       ├── reset_database.py        # Löscht ALLE gruppe3-Tabellen (Reset für End-to-End-Tests, fragt nach)
+│       ├── migrate_audit_tables_to_iceberg.py  # EINMALIG: Audit-Tabellen Parquet → Iceberg (s. Einrichtung)
+│       ├── german_cities.txt        # Referenzliste Städte/Orte (für Encoding-Auflösung in Stufe 2)
+│       ├── german_regions.txt       # Referenzliste Landkreise + kreisfreie Städte
+│       ├── german_states.txt        # Referenzliste der 16 Bundesländer
 │       └── ImpalaJDBC42.jar         # JDBC-Treiber für Spark (lokal bereitzustellen, s. Einrichtung)
 │
 ├── data/                            # Lokale CSV-Kopie zur Inspektion (nicht Teil der Pipeline)
@@ -141,8 +152,10 @@ Modul-Docstring am Dateianfang; tiefergehende Analysen liegen in `docs/`):
    funktionieren.
 6. **[src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py)** –
    Stufe 2, die Datenbereinigung. Hier steckt die Lösung des Encoding-Problems
-   (Korrektur-Mappings für irreparabel zerstörte Umlaute, Transliteration für
-   intakte, Koordinaten-Normalisierung) und der zeilengenaue Key-Merge.
+   (Laufzeit-Erkennung kaputter Kreisnamen + automatische Auflösung über die
+   Referenzlisten in `src/utils/`, Transliteration für intakte Umlaute,
+   Koordinaten-Normalisierung) und der zeilengenaue Key-Merge per Iceberg
+   `MERGE INTO`/`DELETE` (Hintergrund: [ADR.md](ADR.md)).
 7. **[src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py)** –
    Stufe 3 (Spark): pro Zieltabelle eine `build_…()`-Funktion, `main()` führt
    sie in Abhängigkeits-Reihenfolge aus (erst Dimensionen, dann Basis-Fakten,
@@ -178,6 +191,21 @@ python -m venv .venv
 
 Die Stufen 1+2 einzeln und alle `utils/`-Skripte brauchen **kein** Java —
 nur Python + `.env`.
+
+**Einmalige Iceberg-Migration (nur falls die Audit-Tabellen noch als Parquet
+existieren):** Seit 07.07. erwartet Stufe 2 die Tabellen
+`gruppe3_audit_bauland` und `gruppe3_audit_bevoelkerungzahlen` als
+Apache-Iceberg-Tabellen (s. [ADR.md](ADR.md)). Bestehende Parquet-Bestände
+müssen einmalig migriert werden — sonst bricht `pipeline_staging_to_audit.py`
+mit einer klaren Fehlermeldung ab:
+
+```bash
+.venv/Scripts/python.exe src/utils/migrate_audit_tables_to_iceberg.py
+```
+
+Das Skript ist idempotent (erkennt „bereits Iceberg" und tut dann nichts) und
+verifiziert die Zeilenzahl vor dem Tausch. Die zentralen Gruppen-Tabellen sind
+bereits migriert; der Schritt betrifft vor allem frische Test-/Reset-Umgebungen.
 
 ## Benutzung
 
@@ -286,7 +314,7 @@ dieselben Tabellen und kämen sich ins Gehege).
 | Schicht | Tabellen | Zweck |
 |---|---|---|
 | Staging | `gruppe3_staging_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}` | unveränderte Rohkopie |
-| Audit | `gruppe3_audit_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}` | bereinigte Basis |
+| Audit | `gruppe3_audit_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}` | bereinigte Basis (`bauland`+`bevoelkerungzahlen` als Iceberg, Rest Parquet) |
 | Datenprodukt | 4 × `gruppe3_dim_*`, 5 × `gruppe3_fact_*` | Star-Schema für Konsumenten |
 | ETL-Metadaten | `gruppe3_etl_state`, `gruppe3_etl_row_state`, `gruppe3_etl_changed_keys_tmp` | Incremental-Loading-Zustand (kein Konsumenten-Interface) |
 
@@ -306,8 +334,13 @@ Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
 ## Datenqualität: was bereinigt wurde (Kurzfassung)
 
 - **Zerstörte Umlaute** (`L�beck`) in Bauland/Bevölkerung: das Originalzeichen
-  ist als U+FFFD unwiederbringlich verloren → Korrektur über explizite
-  Mapping-Listen (~90 Kreise, 2 Merkmalstexte) in Stufe 2. Nach dem Lauf
+  ist als U+FFFD unwiederbringlich verloren → Stufe 2 **entdeckt** die
+  betroffenen Kreisnamen zur Laufzeit in den Staging-Tabellen und löst die
+  korrekte Schreibweise automatisch über drei Referenzlisten auf
+  (`src/utils/german_cities.txt`, `german_regions.txt`, `german_states.txt`,
+  Herkunft s. [quellen.txt](quellen.txt)); nur 8 Sonderfälle ohne
+  Listen-Eintrag (Berliner Bezirke, aufgelöste Altkreise) bleiben manuell
+  gepflegt (`MANUAL_KREIS_CORRECTIONS`), dazu 2 Merkmalstexte. Nach dem Lauf
   verifiziert: **0 verbleibende kaputte Zeichen** in allen Audit-Tabellen.
 - **Intakte Umlaute** (Gemeindenamen): echte Transliteration ä→ae/ö→oe/ü→ue,
   damit alle Namens-Joins dieselbe ASCII-Schreibweise verwenden.
@@ -345,4 +378,5 @@ Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
    (harmlos, s. [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)).
 
 > **Warum ist alles so gebaut (und was galt früher)?** → [docs/entscheidungen.md](docs/entscheidungen.md) (ADRs + Problem-Historie)
+> **Vertiefung Apache Iceberg** (Audit-Merge, 3 Iterationen inkl. Live-Verifikation): [ADR.md](ADR.md)
 > Hintergrund & Prüfungsvorbereitung: [docs/projekt_notizen.md](docs/projekt_notizen.md)

@@ -85,13 +85,13 @@ s. dortiger Modul-Docstring fuer die fachliche Begruendung):
     wissen, bis wohin SIE SELBST schon verarbeitet hat.
   - bauland/bevoelkerungzahlen (KEY_COLUMNS): ECHTES zeilengenaues
     Incremental Merge per Business-Key (audit_table_keyed_snapshot, s.
-    dortige Funktions-Dokumentation fuer das genaue Vorgehen und die
-    CREATE-NEW-SWAP-DROP-Technik, die noetig ist, weil Impala weder UPDATE
-    noch MERGE kennt). Kurzfassung: Jede Zeile bekommt ueber ihren
-    fachlichen Schluessel einen Inhalts-Hash; nur Zeilen mit neuem/
-    geaendertem/verschwundenem Hash werden neu bereinigt bzw. entfernt, alle
-    unveraenderten Zeilen werden unangetastet aus der bisherigen Audit-Tabelle
-    uebernommen.
+    dortige Funktions-Dokumentation; die Audit-Tabellen sind dafuer
+    Apache-Iceberg-Tabellen, damit Impala echtes DELETE/MERGE INTO kann -
+    Hintergrund und Historie in ADR.md). Kurzfassung: Jede Zeile bekommt
+    ueber ihren fachlichen Schluessel einen Inhalts-Hash; nur Zeilen mit
+    neuem/geaendertem/verschwundenem Hash werden neu bereinigt bzw.
+    entfernt, alle unveraenderten Zeilen bleiben unangetastet in der
+    Audit-Tabelle liegen.
   - gemeinden (TABLE_LEVEL_SNAPSHOT_TABLES): bewusst KEIN zeilengenauer
     Merge, sondern die reine Tabellen-Pruefsumme (audit_table_snapshot(),
     content_signature() - "hat sich IRGENDWO etwas geaendert", nicht WELCHE

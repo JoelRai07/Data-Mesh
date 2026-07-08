@@ -69,7 +69,7 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 
 ### ADR-6 · Encoding: Korrektur-Mappings für Zerstörtes, Transliteration für Intaktes
 **Kontext:** In Bauland/Bevölkerung sind Umlaute als U+FFFD (`�`) gespeichert — die Information ist **weg**, kein Algorithmus kann sie zurückrechnen. In Gemeinden sind Umlaute intakt; Klimadaten haben englische Exonyme und Kompass-Koordinaten.
-**Entscheidung:** Explizite 1:1-Mappings für die bekannten zerstörten Werte (`KREIS_CORRECTIONS` ~90 Einträge, `BAULAND_MERKMAL_CORRECTIONS`); echte Transliteration ä→ae/ö→oe/ü→ue nur für intakte Spalten; `CITY_NAME_CORRECTIONS` (Munich→Muenchen); `compass_to_signed_decimal` („5.63S"→„-5,63"); alles serverseitig in Stufe 2.
+**Entscheidung:** 1:1-Korrekturen für die bekannten zerstörten Werte — seit 07.07. werden die betroffenen Kreisnamen zur **Laufzeit entdeckt** (`_discover_bad_kreis_values`) und automatisch über drei Referenzlisten aufgelöst (`src/utils/german_cities.txt`/`german_regions.txt`/`german_states.txt`, s. `quellen.txt`); nur 8 Sonderfälle ohne Listen-Eintrag bleiben manuell (`MANUAL_KREIS_CORRECTIONS`), plus `BAULAND_MERKMAL_CORRECTIONS` (2 Merkmalstexte); echte Transliteration ä→ae/ö→oe/ü→ue nur für intakte Spalten; `CITY_NAME_CORRECTIONS` (Munich→Muenchen); `compass_to_signed_decimal` („5.63S"→„-5,63"); alles serverseitig in Stufe 2.
 **Warum:** Bei zerstörter Information ist ein gepflegtes Mapping die einzig **korrekte** Lösung; Transliteration überall sonst macht alle Namens-Joins ASCII-einheitlich.
 **Ergebnis:** 0 verbleibende `�` in allen Audit-Tabellen (live verifiziert 06.07.2026).
 **Trade-off:** Mapping-Pflege bei neuen kaputten Werten; `strip_after_comma` kostet die Stadt/Landkreis-Unterscheidung im Namen (offener Punkt, s. TODO).
