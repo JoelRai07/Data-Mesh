@@ -88,7 +88,7 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
   3. **Inhalts-Prüfsumme** (`gemeinden` — kein NULL-freier Key): Full Refresh nur bei geänderter Prüfsumme.
   Der Zustand liegt in `gruppe3_etl_state`/`_row_state` — **append-only** (jüngster Eintrag gewinnt), weil Zeilen-Updates in Impala/Parquet nicht existieren (gilt weiterhin für diese State-Tabellen selbst, die bleiben Parquet). Stufe 3 überspringt den ganzen Spark-Lauf, wenn kein Audit-Stand neuer ist als der letzte Ziel-Build.
 **Warum gemeinden nicht zeilengenau:** live getestet — NULL-behaftete Keys kollidierten, ein Reset-Folgelauf erkannte fälschlich Änderungen; bei ~11 k Zeilen ist die Prüfsumme robust und schnell genug.
-**Trade-off:** Deutlich mehr Komplexität + State-Tabellen. **Bekannter Bug:** das Wasserzeichen wird bei jedem Lauf neu geschrieben → der Skip von Stufe 3 greift im Komplettlauf nie (s. TODO, Fix ist ein Einzeiler).
+**Trade-off:** Deutlich mehr Komplexität + State-Tabellen. *(Der frühere Bug „Wasserzeichen wird bei jedem Lauf neu geschrieben → Stufe-3-Skip greift nie" ist gefixt: `record_state()` wird nur noch bei tatsächlicher Änderung aufgerufen, s. TODO „Erledigt".)*
 
 ### ADR-9 · `run_pipeline.py` als einziger Einstiegspunkt, fail-fast *(neu 06.07., Duc)*
 **Kontext:** Vorher vier einzelne Skript-Starts mit stiller Reihenfolge-Abhängigkeit (Zieltabellen mussten vor Stufe 3 existieren).
@@ -99,7 +99,7 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 **Kontext:** Scheduler-Code ist Teil der benoteten Abgabe.
 **Entscheidung:** `BlockingScheduler` + `CronTrigger(hour=0, minute=0)`, Fehler-Isolation je Lauf, `misfire_grace_time=3600`, Zeitzone Europe/Berlin.
 **Warum:** Der Zeitplan steht als **lesbarer Code im Repo** (statt Crontab außerhalb), läuft auf Windows wie Linux.
-**Trade-off:** Kein Backfilling/DAG wie Airflow — produktiv gehörte das auf die Plattform (Cloudera DE); als Ausblick in der Präsentation. **Offen:** steht noch im Testmodus und ruft nur Stufe 3 → TODO.
+**Trade-off:** Kein Backfilling/DAG wie Airflow — produktiv gehörte das auf die Plattform (Cloudera DE); als Ausblick in der Präsentation. *(Finalisiert: ruft täglich 00:00 den kompletten `run_pipeline.main()`-Lauf auf — nicht mehr nur Stufe 3; dank Incremental Loading ist der Komplettlauf bei unveränderten Quellen billig.)*
 
 ### ADR-11 · NULL-Semantik: `safe_div` statt Infinity/NaN
 **Kontext:** 748 Bauland-Zeilen haben `flaeche = 0` (amtliche Rundung) → `kaufsumme/0 = Infinity` → **ein** Wert vergiftet AVG/STDDEV-Fensteraggregate eines ganzen Jahrgangs → Score-Spalte komplett NULL.
