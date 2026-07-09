@@ -1,5 +1,11 @@
 # Architektur-Entscheidungen (ADRs) & Projekt-Historie
 
+> **Hinweis:** Die kanonische, vollständige und aktuell gepflegte
+> Entscheidungssammlung ist seit 07.07.2026 **[../ADR.md](../ADR.md)** (alle
+> ADRs inkl. Iceberg, Env-Var-Config, Klimadaten-Wasserzeichen). Dieses
+> Dokument bleibt als ausführlichere Projekt-Historie erhalten, kann aber
+> gegenüber ADR.md veralten — im Zweifel gilt ADR.md.
+
 Dieses Dokument ist der **rote Faden durch alle Entscheidungen**: welche gerade
 gelten (aktive ADRs), welche wir unterwegs verworfen haben (abgelöste ADRs, mit
 Begründung) und welche Probleme dabei gelöst wurden. Ein ADR (Architecture

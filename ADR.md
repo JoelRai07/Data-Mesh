@@ -1,388 +1,168 @@
-# ADR: Apache Iceberg für den zeilengenauen Merge in Stufe 2 (Audit)
+# Architektur-Entscheidungen (ADR)
 
-**Status:** umgesetzt, end-to-end live verifiziert (07.07.2026). Eine zweite
-Iteration hatte die Hash-Historie je Zeile testweise entfernt (s. „Iteration
-2" unten) - das wurde danach wieder rueckgaengig gemacht, weil
-`gruppe3_etl_row_state`/`gruppe3_etl_changed_keys_tmp` vom Incremental
-Scheduler gebraucht werden (s. „Iteration 3").
-**Betrifft:** [src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py) — `audit_table_keyed_snapshot()`,
-`ensure_iceberg_audit_table()`, Tabellen `gruppe3_audit_bauland` und `gruppe3_audit_bevoelkerungzahlen`.
-Am Rande mitgefixt: [src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py) setzte `JAVA_HOME`
-beim Direktaufruf nie auf JDK 17 (s. Verifikations-Abschnitt) — unabhängiger Bug, der bei der End-to-End-Prüfung dieser ADR auffiel.
-**Ersetzt:** den Rename-Swap-Teil von ADR-8 in [docs/entscheidungen.md](docs/entscheidungen.md) (dort entsprechend aktualisiert)
+Dieses Dokument ist die **zentrale, vollständige Sammlung aller wichtigen
+Architektur-Entscheidungen** des Projekts. Jede Entscheidung hält fest:
+**Kontext → Entscheidung → Warum → Trade-off.** Am Ende: abgelöste
+Entscheidungen (was früher galt) und gelöste Probleme.
 
-## Kontext: das Problem
+> Für Benutzung/Setup → [README.md](README.md) · Konsumenten-Sicht →
+> [docs/data_contract.yaml](docs/data_contract.yaml) · Datenmodell-Begründung →
+> [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md) · offene
+> Punkte → [TODO.md](TODO.md).
 
-Alle Tabellen dieses Projekts lagen bisher `STORED AS PARQUET` auf normalem
-Impala/HDFS-Speicher. Parquet-Tabellen in Impala kennen **kein zeilengenaues
-UPDATE, DELETE oder MERGE** — nur `INSERT`, `INSERT OVERWRITE` und `TRUNCATE`
-auf der ganzen Tabelle.
+## Architektur in 30 Sekunden
 
-Für `bauland` und `bevoelkerungzahlen` (Snapshot-Tabellen **mit** verlässlichem
-Business-Key, s. `KEY_COLUMNS`) betreibt Stufe 2 trotzdem einen echten
-**zeilengenauen** Incremental Merge: pro Lauf werden per FNV-Hash-Vergleich
-genau die neuen/geänderten/gelöschten Keys ermittelt (`audit_table_keyed_snapshot()`).
-Ohne UPDATE/DELETE musste das bisher komplett drumherum gebaut werden:
-
-1. Betroffene Keys in eine Hilfstabelle schreiben (`gruppe3_etl_changed_keys_tmp`).
-2. Eine **komplett neue** Tabelle per `CREATE TABLE … AS SELECT` zusammensetzen:
-   `LEFT ANTI JOIN` (unveränderte alte Zeilen) `UNION ALL` `LEFT SEMI JOIN`
-   (frisch bereinigte Zeilen für die betroffenen Keys).
-3. Die neue Tabelle per `ALTER TABLE … RENAME TO` gegen die alte tauschen,
-   die alte danach löschen.
-
-Der Umweg über „neue Tabelle bauen + tauschen" statt einfach
-`INSERT OVERWRITE TABLE audit SELECT … FROM audit …` war nötig, weil Impala
-nicht sicher aus einer Tabelle lesen kann, während dieselbe Tabelle per
-`INSERT OVERWRITE` geleert wird (Race zwischen laufendem Scan und Truncate —
-im schlechtesten Fall gehen dabei alle nicht neu geschriebenen Zeilen verloren).
-Das funktionierte, aber:
-
-- ~35 Zeilen reine Infrastruktur-SQL, die nichts mit der eigentlichen
-  Bereinigungslogik zu tun haben.
-- Bei jedem Lauf wird die **gesamte** unveränderte Restmenge (bei `bauland`
-  z. B. tausende Zeilen) einmal komplett neu geschrieben, nur um sie
-  unverändert wieder einzusetzen.
-- Ein abgebrochener Lauf mitten in Schritt 2/3 hinterlässt Restmüll
-  (`_incoming`-/`_old`-Tabellen), den niemand automatisch aufräumt.
-
-## Entscheidung
-
-Die beiden Tabellen `gruppe3_audit_bauland` und `gruppe3_audit_bevoelkerungzahlen`
-laufen jetzt als **Apache-Iceberg-Tabellen** (`STORED BY ICEBERG`,
-`format-version=2`) statt als Parquet-Tabellen. `audit_table_keyed_snapshot()`
-ersetzt den kompletten CREATE+RENAME+DROP-Umweg durch zwei direkte, native
-SQL-Statements, ausgeloest fuer genau die Keys, die laut der Hash-Historie
-(`gruppe3_etl_row_state`, s. `etl_state.py`) neu/geaendert/geloescht sind:
-
-```sql
--- a) echt geloeschte Keys entfernen (in changed_keys, aber nicht mehr in Staging)
-DELETE t FROM gruppe3_audit_bauland t WHERE <key(t)> IN (
-    SELECT c.row_key FROM gruppe3_etl_changed_keys_tmp c
-    LEFT ANTI JOIN (SELECT * FROM gruppe3_staging_bauland) s ON c.row_key = <key(s)>
-)
-
--- b) betroffene, weiterhin vorhandene Keys aktualisieren/einfuegen
-MERGE INTO gruppe3_audit_bauland t USING (
-    SELECT <bereinigte Spalten> FROM gruppe3_staging_bauland s
-    LEFT SEMI JOIN gruppe3_etl_changed_keys_tmp c ON <key(s)> = c.row_key
-) src ON <key(t)> = <key(src)>
-WHEN MATCHED THEN UPDATE SET spalte1 = src.spalte1, ...
-WHEN NOT MATCHED THEN INSERT (spalte1, ...) VALUES (src.spalte1, ...)
+```
+default.project_* ──(1) Staging──▶ gruppe3_staging_* ──(2) Audit──▶ gruppe3_audit_* ──(3) Publish──▶ dim_*/fact_* ──(4) Gate
+                    impyla, inkrementell        impyla, Bereinigung + inkrementell        Spark, Star-Schema      Data Contract
 ```
 
-Unveränderte Zeilen (Key nicht in der Changed-Keys-Hilfstabelle) werden von
-keinem der beiden Statements angefasst — kein Neuschreiben der ganzen Tabelle
-mehr. Eine Hilfsfunktion `ensure_iceberg_audit_table()` sorgt dafür, dass die
-Audit-Tabelle als Iceberg vorliegt: legt sie frisch als Iceberg an, wenn sie
-noch nicht existiert; existiert sie noch als Parquet, bricht sie mit einer
-klaren Fehlermeldung ab (die einmalige Migration ist ein separates Skript,
-s. „Iteration 2"). Die Hash-Historie je Zeile
-(`gruppe3_etl_row_state`/`gruppe3_etl_changed_keys_tmp`) bleibt bewusst
-bestehen, auch wenn sie fuer das reine DELETE+MERGE gegen Iceberg technisch
-nicht mehr zwingend noetig waere (s. „Iteration 2"/„Iteration 3" unten) —
-sie wird zusaetzlich vom Incremental Scheduler gebraucht.
+Write-Audit-Publish in drei Stufen (ADR-3), drei Lade-Strategien je
+Tabellenart (ADR-8), Bereinigung in Impala-SQL / Transformationen in Spark
+(ADR-4/5), Orchestrierung über `run_pipeline.py` (ADR-9), täglicher Trigger
+(ADR-10), Data Contract als Output-Port + technisches Gate (ADR-12).
 
-## Wie Apache Iceberg das Problem löst
+---
 
-Iceberg ist ein **offenes Tabellenformat** (kein neues Storage-System) — die
-Daten liegen weiterhin als Parquet-Dateien, aber Iceberg legt eine
-Metadaten-/Snapshot-Schicht darüber, die jeden Schreibvorgang als **atomaren
-Commit** behandelt (neuer Metadaten-Zeiger wird erst nach vollständigem
-Schreiben der neuen Datendateien atomar umgeschaltet). Dadurch kann Impala auf
-Iceberg-Tabellen echtes zeilengenaues `DELETE`, `UPDATE` und `MERGE INTO`
-anbieten, ohne dass ein Reader jemals eine halb-geleerte oder halb-geschriebene
-Tabelle sieht — genau die Race, die den Rename-Swap-Umweg nötig gemacht hatte,
-existiert bei Iceberg schlicht nicht mehr. Der komplette
-CREATE-TABLE-AS-SELECT-plus-Rename-Tanz war nur ein Workaround für eine
-Einschränkung von **Parquet-auf-HDFS**, nicht von Impala/SQL an sich — Iceberg
-behebt die Einschränkung an der Wurzel, der Anwendungscode wird dadurch
-einfacher, nicht komplizierter.
+## Aktive Entscheidungen
 
-## Was bewusst NICHT migriert wurde
+### ADR-1 · Star-Schema, denormalisiert, als Parquet
+**Kontext:** 4 Quelltabellen, analytischer Use Case „Standortprofil-Dashboard" (OLAP, lesen/aggregieren).
+**Entscheidung:** 4 Dimensionen + 5 Fakten, denormalisiert (z. B. Bundesland direkt in `dim_kreis`), `STORED AS PARQUET`.
+**Warum:** OLAP liest Aggregate über viele Zeilen — Normalisierung (3. NF) erzwingt teure Joins; Parquet ist spaltenorientiert.
+**Trade-off:** Redundanz in den Dimensionen — für ein Lese-System gewollt. Details: [datenmodell_begruendung.md](docs/datenmodell_begruendung.md).
 
-- **`gemeinden` und `klimadaten`** (`audit_table_snapshot()` /
-  `audit_table_incremental()`) bleiben `STORED AS PARQUET`. Sie werden nie
-  zeilengenau verändert, sondern immer komplett per `INSERT OVERWRITE`
-  ersetzt oder per `INSERT INTO` reiner Zeitreihen-Append — für beides bietet
-  Iceberg gegenüber Parquet keinen Vorteil, der die Umstellung rechtfertigt.
-- **Die Ziel-Sternschema-Tabellen** (`dim_*`/`fact_*`,
-  [pipeline_audit_to_target.py](src/pipeline_audit_to_target.py)) bleiben
-  ebenfalls Parquet. Sie werden von Spark über den **generischen JDBC-Dialekt**
-  geschrieben (kein nativer Iceberg-Catalog-Zugriff, s. ADR-5 in
-  `entscheidungen.md`) — Iceberg würde dort das dokumentierte
-  TRUNCATE/Dialekt-Problem nicht lösen, sondern nur den Storage-Layer
-  austauschen. Eine echte Nutzung von Iceberg dort würde bedeuten, den
-  gesamten Schreibpfad auf einen nativen Iceberg-Catalog umzustellen — das ist
-  eine deutlich größere Rearchitecture und aktuell nicht gerechtfertigt.
+### ADR-2 · Regionalschlüssel + `dim_gemeinde` als verbindende Dimensionen
+**Kontext:** Bevölkerung und Bauland teilen den amtlichen Regionalschlüssel; Klima hat nur Städtenamen, Gemeinden keinen amtlichen Schlüssel.
+**Entscheidung:** `dim_kreis` (Regionalschlüssel) als conformed dimension für Bevölkerung+Bauland; `dim_gemeinde` als Brücke zwischen Kreis- und Klimastadt-Ebene.
+**Warum:** So werden aus 4 isolierten Tabellen **ein** zusammenhängendes Modell — der eigentliche Mehrwert des Datenprodukts.
+**Trade-off:** Die Brücke basiert auf Namens-Matching, nicht perfekt (97,5 % Kreis-Coverage, im Contract dokumentiert).
 
-## Verifikation (live gegen den echten Cluster, Impala 4.5.0 / Cloudera Runtime 7.3.2)
+### ADR-3 · Write-Audit-Publish in drei getrennten Stufen
+**Kontext:** Rohdaten haben massive Qualitätsprobleme (Encoding, Formate); WAP/Medallion als Organisations-Pattern (Vorlesung 3).
+**Entscheidung:** Drei Stufen mit eigenen Tabellen-Schichten: `staging_*` (Rohkopie) → `audit_*` (bereinigt) → `dim_*/fact_*` (veröffentlicht). Ein Skript pro Stufe.
+**Warum:** Klare Verantwortung pro Stufe; roh und bereinigt liegen nebeneinander (nachvollziehbar); Stufen einzeln ausführ- und testbar.
+**Trade-off:** ~2× Speicher für die Rohkopie, drei Skripte statt einem — bewusst bezahlt (Aufwand vs. Vertrauen).
 
-- `CREATE TABLE … STORED BY ICEBERG`, `INSERT`, `UPDATE`, `DELETE`,
-  `MERGE INTO` und Time Travel (`FOR SYSTEM_TIME AS OF`) einzeln gegen
-  Test-Tabellen geprüft — alle funktionieren.
-- Exaktes Syntax-Detail geprüft und korrigiert: `CREATE TABLE … LIKE …
-  STORED BY ICEBERG` schlägt fehl, wenn die Quelltabelle selbst kein Iceberg
-  ist ("cannot be cloned into an Iceberg table") → stattdessen
-  `CTAS … WHERE 1=0` für die Schema-Übernahme. `DELETE FROM tbl alias WHERE
-  …` ist ein Syntaxfehler; die korrekte Impala-Syntax ist
-  `DELETE alias FROM tbl alias WHERE …`.
-- Der komplette DELETE+MERGE-Pfad wurde end-to-end gegen eine isolierte
-  Testtabelle mit demselben zusammengesetzten Schlüssel wie `bauland`
-  (`kreis_id, jahr, merkmal`) durchgespielt: initialer Full Load (reines
-  Insert über MERGE), Skip bei unveränderten Daten, und gleichzeitiges
-  Update+Delete+Insert in einem Lauf — Ergebnis stimmt exakt mit der Erwartung
-  überein.
-- Die **echte Migration** wurde gegen die Produktions-Tabellen
-  `gruppe3_audit_bauland` (21.600 Zeilen) und `gruppe3_audit_bevoelkerungzahlen`
-  (581 Zeilen) ausgeführt: Zeilenzahl und Inhalts-Prüfsumme
-  (`content_signature()`) vor und nach der Migration sind identisch, kein
-  Datenverlust. Beide Tabellen sind jetzt bestätigt Iceberg
-  (`DESCRIBE FORMATTED` zeigt `HiveIcebergSerDe`).
-- **Der Spark-JDBC-Lesepfad in `pipeline_audit_to_target.py` ist inzwischen
-  verifiziert.** Ein erster erzwungener Testlauf (`FORCE_TARGET_BUILD=1`)
-  scheiterte zunächst an einem echten, von dieser Iceberg-Umstellung
-  unabhängigen Bug: `pipeline_audit_to_target.py` setzte `JAVA_HOME` beim
-  direkten Aufruf nie auf JDK 17 (das übernahm bisher nur `scheduler.py` für
-  den Fall, dass der Scheduler der Aufrufer ist) — beim Direktaufruf griff
-  PySpark auf das System-Default-JDK (hier JDK 26) zu, das die von
-  Spark/Hadoop 3.5.x benötigte, in JDK ≥ 23/24 entfernte Security-API
-  `Subject.getSubject` nicht mehr kennt
-  (`UnsupportedOperationException: getSubject is not supported`, bereits
-  dokumentiert in `docs/spark_stolpersteine.md`, Stolperstein 1). Fix:
-  dieselbe `JAVA_HOME_JDK17`-Übernahme wie in `scheduler.py`, jetzt auch am
-  Anfang von `pipeline_audit_to_target.py` selbst, vor dem `pyspark`-Import.
-  Nach dem Fix lief der komplette Ziel-Build (`FORCE_TARGET_BUILD=1`)
-  erfolgreich durch und hat alle 9 Ziel-Tabellen aus den jetzt
-  Iceberg-basierten Audit-Tabellen `gruppe3_audit_bauland`/
-  `gruppe3_audit_bevoelkerungzahlen` per Spark-JDBC neu gebaut (`dim_kreis`
-  472, `dim_jahr` 30, `dim_klimastadt` 81, `dim_gemeinde` 10.947,
-  `fact_bevoelkerung` 14.110, `fact_bauland` 4.720, `fact_klima` 1.539,
-  `fact_gemeinde_stamm` 10.947, `fact_standortprofil_kpi` 4.099) — der
-  generische Impala-JDBC-Dialekt liest Iceberg-Tabellen exakt wie
-  Parquet-Tabellen, keine Anpassung in Stufe 3 nötig.
-- `ALTER TABLE … CREATE TAG/BRANCH` (Iceberg-Branching/Tagging) schlug als
-  Impala-DDL fehl (Syntaxfehler) — ob Impala das grundsätzlich nicht anbietet
-  oder nur die Syntax falsch geraten war, ist offen; für diese Entscheidung
-  ungenutzt und nicht weiter verfolgt.
+### ADR-4 · Engine-Mix: Impala-SQL für Stufe 1+2, Spark für Stufe 3
+**Kontext:** Vorgabe „Pipeline mit NiFi oder Spark, kein reiner Skript-Code"; Klimadaten haben 8,6 Mio. Zeilen.
+**Entscheidung:** Kopieren/Bereinigen als serverseitiges `INSERT OVERWRITE/INTO … SELECT` (impyla setzt nur ab); Transformationen (Unpivot, Pivot, Window/z-Score) als PySpark DataFrame-API.
+**Warum:** 8,6 Mio. Zeilen durch Python zu schleusen wäre unsinnig langsam; Spark glänzt bei den komplexen Transformationen — u. a. `STDDEV() OVER (…)`, das Impala als Window-Funktion nicht kann.
+**Trade-off:** Zwei Werkzeuge im Projekt — in der Präsentation aktiv begründen.
 
-## Trade-offs
+### ADR-5 · Hybrid-I/O: Spark liest per JDBC, impyla schreibt zurück
+**Kontext:** `df.write.jdbc()` gegen Impala scheitert (kein Impala-Dialekt in Spark; Treiber kann NULL-Parameter nicht binden).
+**Entscheidung:** Spark nur zum Lesen/Rechnen; Schreiben via `collect()` + impyla-`INSERT INTO … VALUES`-Batches (`overwrite_table()`), `TRUNCATE` separat per impyla.
+**Warum:** Impala ist ein Lese-Motor, kein robustes JDBC-Schreibziel — bewusste Architekturentscheidung. Details: [spark_stolpersteine.md](docs/spark_stolpersteine.md).
+**Trade-off:** `collect()` holt Ergebnisse zum Treiber — bei ≤ ~15 k Zielzeilen unkritisch, skaliert aber nicht beliebig.
 
-- **Neue, weniger battle-getestete Code-Pfade:** `DELETE`/`MERGE INTO` auf
-  Iceberg sind in Impala jüngere Features als das reine `INSERT`/`CREATE`, mit
-  dem der Rest des Projekts arbeitet. Dagegen steht, dass der bisherige
-  Rename-Swap-Workaround selbst schon eine dokumentierte Krücke mit eigenen
-  Randfällen war (s. ADR-8) — kein Wechsel von "bewährt" zu "neu", sondern von
-  "Workaround" zu "Kern-Feature des Formats, für genau diesen Zweck gebaut".
-- **Migration betrifft Produktionsdaten:** Die einmalige Parquet→Iceberg-
-  Migration wurde gegen die echten Gruppen-Tabellen ausgeführt und verifiziert
-  (s. oben). Seit Iteration 2 (s. unten) läuft sie **nicht mehr automatisch**
-  innerhalb der Pipeline, sondern über ein separates, explizit zu startendes
-  Skript (`src/utils/migrate_audit_tables_to_iceberg.py`) — Teammitglieder,
-  die den Code neu auschecken, müssen es einmal manuell ausführen, bevor
-  `pipeline_staging_to_audit.py` wieder läuft (sonst bricht die Pipeline mit
-  einer klaren Fehlermeldung ab, die genau darauf verweist).
-- Iceberg-Tabellen tragen zusätzliche Metadaten (Snapshot-Historie,
-  Manifest-Dateien) gegenüber reinem Parquet — bei der Größenordnung dieses
-  Projekts (zehntausende Zeilen) vernachlässigbar.
-- **Kein Compaction-/Snapshot-Management:** Impala-Iceberg-Tabellen laufen auf
-  diesem Cluster standardmäßig `merge-on-read` (bestätigt: `write.merge.mode
-  merge-on-read` in den TBLPROPERTIES) — jeder `DELETE`/`MERGE` schreibt
-  kleine Delete-Dateien statt die Parquet-Basis neu zu schreiben. Über sehr
-  viele tägliche Läufe sammelt sich das an (mehr Dateien, langsamere Reads),
-  ohne dass hier eine `OPTIMIZE`/`EXPIRE SNAPSHOTS`-Routine ergänzt wurde.
-  Bei der Laufzeit/Datenmenge dieses Projekts unkritisch, aber der fehlende
-  Baustein für echten Produktivbetrieb — bewusst als Ausblick stehen
-  gelassen, nicht umgesetzt.
+### ADR-6 · Encoding: Laufzeit-Erkennung + automatische Auflösung über Referenzlisten
+**Kontext:** In Bauland/Bevölkerung sind Umlaute als U+FFFD (`�`) gespeichert — die Information ist **weg**, kein Algorithmus kann sie zurückrechnen. Gemeinden haben intakte Umlaute; Klimadaten englische Exonyme + Kompass-Koordinaten.
+**Entscheidung:** Die kaputten Kreisnamen werden zur **Laufzeit** in den Staging-Tabellen **entdeckt** (`_discover_bad_kreis_values`) und automatisch über drei Referenzlisten aufgelöst (`src/utils/german_cities.txt`, `german_regions.txt`, `german_states.txt` — Herkunft: [quellen.txt](quellen.txt)): das Ersatzzeichen steht für genau ein verlorenes Zeichen, der Name wird in den Listen gesucht und danach zu ASCII transliteriert. Nur 8 Sonderfälle ohne Listen-Eintrag (Berliner Bezirke, aufgelöste Altkreise) bleiben manuell (`MANUAL_KREIS_CORRECTIONS`), dazu 2 Merkmalstexte (`BAULAND_MERKMAL_CORRECTIONS`). Intakte Umlaute (Gemeinden) → echte Transliteration ä→ae/ö→oe/ü→ue; `CITY_NAME_CORRECTIONS` (Munich→Muenchen); `compass_to_signed_decimal` („5.63S"→„-5,63"). Alles serverseitig in Stufe 2.
+**Warum:** Laufzeit-Erkennung statt hartcodierter ~90-Einträge-Liste — veraltet nicht bei neuen Staging-Daten, und die korrekte Schreibweise wird aus verifizierten Quellen abgeleitet statt geraten. Bricht laut ab (`RuntimeError`), wenn ein kaputter Wert weder auflösbar noch manuell hinterlegt ist.
+**Ergebnis:** 0 verbleibende `�` in allen Audit-Tabellen (live verifiziert).
+**Trade-off:** `strip_after_comma` kostet die Stadt/Landkreis-Unterscheidung im Namen (offen, s. TODO).
 
-## Nicht genutzt, aber möglich (Ausblick)
+### ADR-7 · Klima-Anbindung per Namens-Join (statt Koordinaten-Distanz)
+**Kontext:** Klimastädte haben keinen Regionalschlüssel. Ursprünglich: Zuordnung über die geografisch nächste Stadt (lat/long-Distanz).
+**Entscheidung:** Join `gemeinde_name = stadt_name` (beide Seiten transliteriert + Exonym-Mapping); Gemeinden ohne Treffer bekommen keinen Klimawert (LEFT JOIN, im Score neutral 0).
+**Warum:** Deterministisch und erklärbar; der Distanz-Join scheiterte an zerstörten Koordinaten (P3), und mehrdeutige Kurznamen („Frankfurt", „Oldenburg") wären beim Fuzzy-Match reine Raterei.
+**Trade-off:** Einige Städte bleiben unangebunden; über eine Korrekturliste nachschärfbar.
 
-Time Travel (`FOR SYSTEM_TIME AS OF`) funktioniert bereits auf den migrierten
-Tabellen, wird aber aktuell nicht im Code verwendet — könnte künftig die
-Frage "wie sah `audit_bauland` vor dem letzten WAP-Lauf aus" direkt per Query
-beantworten, ohne eigene Historisierung zu bauen. Kein Teil dieser
-Entscheidung, nur als Anschlussmöglichkeit festgehalten.
+### ADR-8 · Incremental Loading mit drei Strategien + append-only State
+**Kontext:** Der Scheduler läuft täglich; ein täglicher Full Load von 8,6 Mio. Klimazeilen wäre Verschwendung.
+**Entscheidung:** Je Tabellenart die passende Strategie (Incremental-Loader-Pattern):
+  1. **Wasserzeichen** (`klimadaten`, echte Zeitreihe über `dt`): nur neuere Zeilen anhängen (`INSERT INTO`). S. ADR-15, warum das hier die *richtige* Wahl ist.
+  2. **Zeilengenauer Key-Merge** (`bauland`, `bevoelkerungzahlen` — verlässlicher Business-Key): FNV-Hash je Zeile (`gruppe3_etl_row_state`), nur neue/geänderte/gelöschte Keys ersetzen. Läuft seit 07.07. als **Apache-Iceberg** mit echtem `DELETE`/`MERGE INTO` (s. ADR-13).
+  3. **Inhalts-Prüfsumme** (`gemeinden` — kein NULL-freier Key): Full Refresh nur bei geänderter Prüfsumme der Quelle.
+  Der Zustand liegt in `gruppe3_etl_state`/`gruppe3_etl_row_state` — **append-only** (jüngster Eintrag gewinnt), weil Zeilen-Updates auf Parquet nicht existieren. Stufe 3 überspringt den ganzen Spark-Lauf, wenn kein Audit-Stand neuer ist als der letzte Ziel-Build.
+**Warum gemeinden nicht zeilengenau:** live getestet — NULL-behaftete Keys kollidieren in `CONCAT_WS`, ein Reset-Folgelauf erkannte fälschlich Änderungen; kein stabiler NULL-freier Schlüssel vorhanden (auch `name+PLZ+kreis` bleibt mehrdeutig, s. P8). Bei ~11 k Zeilen ist die Prüfsumme robust und schnell genug.
+**Trade-off:** Mehr Komplexität + State-Tabellen. Der frühere Bug „Wasserzeichen wird bei jedem Lauf neu geschrieben → Stufe-3-Skip greift nie" ist gefixt (`record_state()` nur bei tatsächlicher Änderung).
 
-## Iteration 2: Architektur-Selbstkritik und Vereinfachung (07.07.2026)
+### ADR-9 · `run_pipeline.py` als einziger Einstiegspunkt, fail-fast
+**Kontext:** Vorher vier einzelne Skript-Starts mit stiller Reihenfolge-Abhängigkeit.
+**Entscheidung:** Ein Orchestrator ruft DDLs + Stufe 1→2→3 + Contract-Gate auf; bewusst **kein** try/except je Stufe; Docker-`CMD` zeigt darauf.
+**Warum:** „Idempotent lauffähig" mit einem Befehl demonstrierbar; bricht eine Stufe ab, endet der Gesamtlauf mit Fehler-Exit-Code statt auf veralteten Daten weiterzurechnen.
 
-Nach der ersten Umsetzung (oben) wurde die eigene Implementierung bewusst
-kritisch gegengelesen ("was kann man architektonisch besser machen"). Drei
-Punkte wurden identifiziert und noch am selben Tag umgesetzt und erneut live
-verifiziert:
+### ADR-10 · APScheduler statt cron/Airflow
+**Kontext:** Scheduler-Code ist Teil der benoteten Abgabe.
+**Entscheidung:** `BlockingScheduler` + `CronTrigger(hour=0, minute=0)`, Fehler-Isolation je Lauf, `misfire_grace_time=3600`, Zeitzone Europe/Berlin; ruft täglich den kompletten `run_pipeline.main()` auf.
+**Warum:** Der Zeitplan steht als **lesbarer Code im Repo** (statt Crontab außerhalb), läuft auf Windows wie Linux; dank Incremental Loading ist der Komplettlauf bei unveränderten Quellen billig.
+**Trade-off:** Kein Backfilling/DAG wie Airflow — produktiv gehörte das auf Cloudera DE (Ausblick in der Präsentation).
 
-**1) Redundante Change-Detection entfernt.** Die erste Fassung hatte den
-CREATE+RENAME+DROP-Umweg durch DELETE+MERGE ersetzt, aber die dafuer
-urspruenglich noetige externe Buchfuehrung (`gruppe3_etl_row_state`:
-FNV-Hash je Zeile und Business-Key, plus `gruppe3_etl_changed_keys_tmp` als
-Join-Hilfstabelle) unveraendert weiterbenutzt, um vor dem DELETE/MERGE erst
-in Python zu berechnen, welche Keys ueberhaupt betroffen sind. Das war nicht
-mehr noetig: weil MERGE INTO/DELETE jetzt direkt gegen die (Iceberg-)
-Audit-Tabelle laufen, IST die Audit-Tabelle selbst der aktuelle
-Vergleichsstand. `audit_table_keyed_snapshot()` vergleicht jetzt direkt in
-SQL (`WHEN MATCHED AND NOT (t.col <=> src.col AND ...) THEN UPDATE`, `<=>`
-= NULL-sicherer Vergleich) und der DELETE-Schritt joint die Audit-Tabelle
-direkt gegen die Staging-Tabelle (`LEFT ANTI JOIN`), ohne Umweg ueber eine
-Changed-Keys-Tabelle. Als guenstigen Vor-Check, ob sich ueberhaupt etwas
-geaendert hat (um bei unveraenderten Daten nicht jeden Tag DELETE+MERGE
-auszufuehren), wird jetzt dieselbe `content_signature()`-Tabellen-Pruefsumme
-verwendet, die `audit_table_snapshot()` (fuer `gemeinden`) bereits nutzt -
-ein Aggregat-Scan statt eines GROUP-BY-Hash-je-Zeile plus Python-Diff.
-Ergebnis: `ROW_STATE_TABLE`/`CHANGED_KEYS_TABLE` und alle zugehoerigen
-Funktionen (`ensure_row_state_table`, `get_latest_row_hashes`,
-`record_row_hashes`, `ensure_changed_keys_table`, `load_changed_keys`) wurden
-komplett aus `etl_state.py` entfernt (verifiziert unbenutzt per Grep vor dem
-Loeschen) - eine komplette State-Tabelle und ein kompletter
-Python-Roundtrip weniger, bei JEDEM Lauf, nicht nur bei tatsaechlichen
-Aenderungen.
+### ADR-11 · NULL-Semantik: `safe_div` statt Infinity/NaN
+**Kontext:** 748 Bauland-Zeilen haben `flaeche = 0` (amtliche Rundung) → `kaufsumme/0 = Infinity` → **ein** Wert vergiftet AVG/STDDEV-Fensteraggregate eines ganzen Jahrgangs → Score-Spalte komplett NULL.
+**Entscheidung:** Jede Division mit variablem Nenner läuft über `safe_div()` (NULL bei Nenner 0/NULL); NaN/Infinity werden beim Schreiben zu NULL; fehlendes Klima geht per `coalesce(…, 0)` neutral in den Score ein.
+**Warum:** NULL heißt hier ehrlich „nicht berechenbar" und wird von Aggregaten übersprungen — Infinity dagegen zerstört sie. Fallstudie: [bugfix_score_nullwerte.md](docs/bugfix_score_nullwerte.md).
 
-**2) `_is_iceberg_table()` robuster gemacht.** Erkannte Iceberg-Tabellen
-vorher per Substring-Suche (`"HiveIcebergSerDe" in <kompletter
-DESCRIBE-FORMATTED-Text>`) - funktioniert, ist aber an das Freitext-Format
-gekoppelt. Impala kennt kein `SHOW TBLPROPERTIES` (Hive-only, live
-getestet, Syntaxfehler); stattdessen liest die neue Fassung gezielt die
-Table-Parameter-Zeile, bei der Spalte 2 (`row[1]`) gleich `table_type` und
-Spalte 3 (`row[2]`) gleich `ICEBERG` ist - ein praeziser Spaltenvergleich
-statt einer Suche im gesamten Text-Dump.
+### ADR-12 · Data Contract als YAML + technisches Publish-Gate
+**Kontext:** Pflicht-Deliverable; Data-Mesh-Prinzipien „Data as a Product" + „Federated Governance".
+**Entscheidung:** [data_contract.yaml](docs/data_contract.yaml) nach Data-Contract-Specification: Owner, Server, Nutzungs-Terms, alle 9 Modelle mit Spalten-Semantik, Servicelevels, **live gemessene** Qualitätszahlen und Beispiel-Queries. Zusätzlich [src/contract_check.py](src/contract_check.py) als **technisches Gate** (Stage 4/4 in `run_pipeline.py`): prüft Schema, `required`-Felder, Eindeutigkeit und ausführbare `quality`-SQLs live gegen Impala, Exit-Code 1 bei Verstoß.
+**Warum:** Konsumenten sollen das Produkt nutzen können **ohne uns zu fragen**; ehrliche, messbare Qualität schafft Vertrauen. Das eigene Gate ergänzt die Data-Contract-CLI, weil die Pipeline bereits über `impyla` gegen dieselbe Umgebung läuft (die CLI scheitert lokal am HTTP-Transport, s. README).
+**Trade-off:** Die Qualitätszahlen sind ein datierter Snapshot und müssen bei Datenänderung nachgezogen werden.
 
-**3) Migration aus dem taeglichen Hot Path entfernt.** `ensure_iceberg_audit_table()`
-migrierte in der ersten Fassung automatisch und lautlos von Parquet zu
-Iceberg, falls noetig - das hiesse, die Pruefung "ist das schon Iceberg?"
-laeuft fuer immer bei jedem Lauf mit, obwohl sie nur beim allerersten Mal
-je etwas tut, und ein Abbruch mitten in der (fuer eine 21.600-Zeilen-Tabelle
-nicht-trivialen) CTAS-Migration waere in einem unbeaufsichtigten,
-automatischen Lauf schwerer zu diagnostizieren gewesen als in einem
-separaten Schritt. Jetzt: `ensure_iceberg_audit_table()` legt eine fehlende
-Tabelle weiterhin frisch als Iceberg an, bricht aber mit einer klaren
-`RuntimeError` ab, wenn eine bestehende Audit-Tabelle noch Parquet ist. Die
-eigentliche Migrationslogik (CTAS + Zeilenzahl-Verifikation + Rename-Swap)
-liegt jetzt in einem eigenen, manuell auszufuehrenden Skript
-([src/utils/migrate_audit_tables_to_iceberg.py](src/utils/migrate_audit_tables_to_iceberg.py)),
-nach demselben Muster wie `reset_database.py` (strukturell heikle,
-einmalige Operationen bekommen ein eigenes Skript statt in der taeglichen
-Pipeline "nebenbei" zu laufen).
+### ADR-13 · Apache Iceberg für den zeilengenauen Audit-Merge *(neu 07.07.)*
+**Kontext:** `bauland`/`bevoelkerungzahlen` brauchen zeilengenaues Ersetzen einzelner Keys (ADR-8, Strategie 2). Parquet auf Impala kennt aber **kein** `UPDATE`/`DELETE`/`MERGE` — nur Full-Table-Operationen. Der bisherige Umweg: die komplette Audit-Tabelle per `CREATE TABLE … AS SELECT` (unveränderte Zeilen + frisch bereinigte) neu bauen und per `RENAME`-Swap tauschen — nötig, weil Impala nicht sicher aus einer Tabelle lesen kann, die es gerade per `INSERT OVERWRITE` überschreibt (Torn Read). Das schrieb bei jedem Lauf die **ganze** Tabelle neu, auch wenn sich nur wenige Zeilen änderten, und hinterließ bei Abbruch Restmüll.
+**Entscheidung:** `gruppe3_audit_bauland` und `gruppe3_audit_bevoelkerungzahlen` laufen als **Iceberg-Tabellen** (`STORED BY ICEBERG`, `format-version=2`). Der Swap-Umweg wird durch zwei native Statements ersetzt — ausgelöst für genau die Keys, die die Hash-Historie (`gruppe3_etl_row_state`) als neu/geändert/gelöscht meldet:
+  - `DELETE` für echt gelöschte Keys (in Changed-Keys, aber nicht mehr in Staging),
+  - `MERGE INTO` für betroffene Keys (`WHEN MATCHED THEN UPDATE`, `WHEN NOT MATCHED THEN INSERT`).
+Unveränderte Zeilen werden gar nicht mehr angefasst. `ensure_iceberg_audit_table()` legt eine fehlende Tabelle frisch als Iceberg an; existiert sie noch als Parquet, bricht sie mit einer klaren Fehlermeldung ab (die einmalige Migration ist ein separates Skript, [src/utils/migrate_audit_tables_to_iceberg.py](src/utils/migrate_audit_tables_to_iceberg.py)).
+**Warum Iceberg das löst:** Iceberg ist ein **offenes Tabellenformat** (Daten bleiben Parquet-Dateien) mit einer Metadaten-/Snapshot-Schicht, die jeden Schreibvorgang als **atomaren Commit** behandelt. Damit gibt es kein Torn Read mehr — der Swap-Umweg war nur ein Workaround für eine Parquet-Einschränkung, nicht für Impala/SQL an sich. Der Anwendungscode wird dadurch einfacher.
+**Verifikation (Impala 4.5.0 / Cloudera Runtime 7.3.2):** `MERGE`/`DELETE`/Time-Travel einzeln getestet; kompletter Insert/Update/Delete-Zyklus gegen isolierte Testtabelle; echte Migration der Produktionstabellen (21.600 / 581 Zeilen) mit identischer Prüfsumme vor/nach; kompletter Stufe-3-Spark-Lauf liest die Iceberg-Tabellen problemlos (generischer JDBC-Dialekt, keine Anpassung nötig).
+**Drei Iterationen — Lehre:** (1) Umsetzung. (2) Selbstkritik: die Row-Hash-Historie testweise entfernt und durch direkten SQL-Vergleich gegen die Iceberg-Tabelle ersetzt — plus robustere Iceberg-Erkennung (`table_type` statt Substring-Suche) und Migration als separates Skript. (3) **Rückgängig gemacht**, weil `gruppe3_etl_row_state` außerhalb dieser Funktion (Incremental Scheduler) gebraucht wird — ein Konsument, den ein Grep im eigenen Code nicht fand. Die anderen zwei Verbesserungen aus (2) blieben. *Lehre: eine Vereinfachung, die nur den gerade bearbeiteten Code liest, kann Konsumenten desselben States übersehen.*
+**Trade-offs:** `MERGE`/`DELETE` sind jüngere Impala-Features (aber gegen den zuvor selbstgebauten Workaround kein Rückschritt); Migration betrifft Produktionsdaten und ist ein bewusster, separater Schritt; **kein Compaction/Snapshot-Management** ergänzt (Iceberg läuft `merge-on-read` → über sehr viele Läufe sammeln sich Delete-Dateien; bei dieser Datenmenge unkritisch, bewusst als Ausblick offen gelassen).
 
-**4) Bewusst NICHT umgesetzt:** Compaction/Snapshot-Expiration (s.
-Trade-offs oben) - als "eher Ausblick als akuter Mangel" bei dieser
-Datenmenge eingestuft und dokumentiert stehen gelassen statt implementiert.
+### ADR-14 · Konfiguration über Umgebungsvariablen *(neu 07.07.)*
+**Kontext:** Datenbank- und Präfix-Namen (`gruppe3`, `gruppe3_`, Quell-DB `default`) waren in jedem Skript hartcodiert.
+**Entscheidung:** `DATABASE` (Default `gruppe3`), `PREFIX` (Default `gruppe3_`) und `SOURCE_DATABASE` (Default `default`) kommen aus der `.env` (`os.getenv(..., default)`, s. `.env.example`). Ohne gesetzte Variablen bleibt alles wie bisher.
+**Warum:** Die Pipeline läuft ohne Code-Änderung gegen eine andere Gruppen-DB / ein anderes Präfix (andere Gruppe, Test-DB) — nützlich für Wiederverwendung und isolierte Tests.
+**Trade-off / Ausnahme:** `src/utils/reset_database.py` **hartcodiert** bewusst `DATABASE = "gruppe3"` — ein `DROP TABLE`-Skript soll sich nicht per Env-Var auf eine fremde Datenbank umlenken lassen.
 
-### Verifikation Iteration 2
+### ADR-15 · Klimadaten bleiben Wasserzeichen — Iceberg bewusst NICHT *(neu 07.07.)*
+**Kontext:** Es wurde geprüft, ob `klimadaten` (wie `bauland`/`bevoelkerungzahlen`) auf Iceberg + zeilengenauen Merge umgestellt werden sollte, um nachträgliche Korrekturen historischer Messwerte per `UPDATE` zu ermöglichen. Ein gültiger Schlüssel existiert sogar (`city + dt`, eindeutig, NULL-frei, auch nach der Transliteration kollisionsfrei).
+**Entscheidung:** `klimadaten` bleibt bei der **Wasserzeichen**-Strategie (ADR-8, Strategie 1). Keine Iceberg-Umstellung.
+**Warum:** Die Quelle `default.project_klimadaten` ist ein **statisches historisches Archiv** (endet 2013, read-only) — historische Werte ändern sich faktisch nie. Damit trifft die Grundannahme des Wasserzeichens („Historie ist unveränderlich") zu, und es ist bei 8,6 Mio. Zeilen die **effizienteste** Wahl. Ein zeilengenauer Merge würde ein Problem lösen, das diese Daten nicht haben — und wäre inkonsistent, weil die Staging-Stufe (aus Performance-Gründen) ohnehin per Wasserzeichen lädt und Quell-Korrekturen gar nicht erst durchreichen würde.
+**Trade-off:** Würde die Quelle jemals änderbar (mutabel), müsste man beide Stufen auf Merge umstellen (Staging = 8,6 Mio. Zeilen hashen pro Lauf → unpraktisch). Für die reale Datenlage ist das Wasserzeichen korrekt; die zeilengenaue Merge-Fähigkeit ist am Beispiel `bauland`/`bevoelkerungzahlen` (ADR-13) bereits demonstriert.
 
-- `MERGE ... WHEN MATCHED AND NOT (t.col <=> src.col ...)` einzeln gegen eine
-  Testtabelle mit einer echten NULL-Spalte geprueft: eine Zeile mit
-  unveraendertem NULL-Wert wird korrekt NICHT als geaendert erkannt (waere
-  sie es mit `=` statt `<=>`, wuerde sie bei jedem Lauf unnoetig neu
-  geschrieben).
-- Kompletter End-to-End-Testlauf (Full Load, Skip bei Unveraendertem,
-  gleichzeitiges Update+Delete+Insert inkl. einer Zeile mit unveraenderter
-  NULL-Spalte) gegen eine isolierte Testtabelle mit demselben
-  zusammengesetzten Schluessel wie `bauland` wiederholt - Ergebnis stimmt
-  exakt mit der Erwartung ueberein.
-- Fail-Fast-Verhalten explizit geprueft: eine als Parquet angelegte
-  Test-Audit-Tabelle fuehrt zu einer `RuntimeError` mit Verweis auf das
-  Migrationsskript, die Tabelle bleibt dabei unangetastet (keine stille
-  Teil-Migration).
-- Migrationsskript gegen die echten (bereits migrierten) Produktionstabellen
-  ausgefuehrt: erkennt korrekt "bereits Iceberg" und tut nichts (idempotent).
-- Kompletter `pipeline_staging_to_audit.py`-Lauf nach allen Aenderungen erneut
-  ausgefuehrt: alle vier Tabellen weiterhin korrekt als "unveraendert"
-  erkannt; Zeilenzahl und Inhalts-Pruefsumme von `gruppe3_audit_bauland`/
-  `gruppe3_audit_bevoelkerungzahlen` exakt identisch zum Stand vor Iteration 2
-  (21.600 / 581 Zeilen, unveraenderte `content_signature()`-Werte).
-- **Zum Zeitpunkt dieser Messung unbenutzt, aber NICHT geloescht:**
-  `gruppe3_etl_row_state` (22.141 Zeilen) und `gruppe3_etl_changed_keys_tmp`
-  (3 Zeilen) wurden zu diesem Zeitpunkt von keinem Code mehr referenziert
-  (per Grep verifiziert) - sie wurden bewusst NICHT automatisch geloescht
-  (Sicherheitsklassifizierung der Umgebung hat das Loeschen bestehender
-  Tabellen mit Dateninhalt ohnehin blockiert). Das erwies sich im Nachhinein
-  als richtig: s. „Iteration 3" - diese Tabellen werden doch gebraucht.
+### ADR-16 · `JAVA_HOME_JDK17` wird vor dem `pyspark`-Import selbst gesetzt *(neu 07.07.)*
+**Kontext:** Spark 3.5.x startet seine JVM beim ersten `SparkSession`-Aufruf mit dem dann aktuellen `JAVA_HOME`. Auf einem System-Default-JDK ≥ 23/24 scheitert es an einer entfernten Hadoop-Security-API (`UnsupportedOperationException: getSubject is not supported`). `scheduler.py` setzte `JAVA_HOME` aus `.env` (`JAVA_HOME_JDK17`) bereits, `pipeline_audit_to_target.py` beim Direktaufruf jedoch nicht.
+**Entscheidung:** `pipeline_audit_to_target.py` übernimmt `JAVA_HOME_JDK17` jetzt selbst — **vor** dem `pyspark`-Import — mit derselben Technik wie `scheduler.py`.
+**Warum:** Der direkte Aufruf `python src/pipeline_audit_to_target.py` (so in der eigenen „Ausführen"-Zeile beschrieben) funktioniert damit ohne manuelles Setzen der Umgebungsvariable; `.env` mit `JAVA_HOME_JDK17` genügt. Details: [spark_stolpersteine.md](docs/spark_stolpersteine.md), Stolperstein 1.
 
-### Fazit: ist es dadurch besser geworden?
+---
 
-Ja, in den drei konkret angegangenen Punkten spuerbar:
+## Abgelöste Entscheidungen (was früher galt)
 
-- **Weniger Code, weniger Zustand:** eine komplette State-Tabelle
-  (`gruppe3_etl_row_state`) plus die kurzlebige Join-Hilfstabelle
-  (`gruppe3_etl_changed_keys_tmp`) und fuenf Funktionen in `etl_state.py`
-  sind ersatzlos entfallen. `audit_table_keyed_snapshot()` ist dadurch kuerzer
-  UND naeher an `audit_table_snapshot()` (gleiche Skip-Technik via
-  `content_signature()`) - ein Muster weniger im Kopf zu behalten.
-  Jeder Lauf spart einen kompletten Python-Roundtrip (Hashes lesen -> Python
-  diffen -> zurueckschreiben), nicht nur an Tagen mit echten Aenderungen.
-- **Robusteres Detection-Verfahren:** die `_is_iceberg_table()`-Pruefung
-  ist jetzt an eine konkrete, benannte Metadaten-Zeile gebunden statt an
-  freien Text - weniger anfaellig fuer ein zukuenftiges Impala-Versions-Update.
-- **Klarere Verantwortlichkeiten:** die strukturell heikle
-  Parquet→Iceberg-Migration ist jetzt ein bewusster, expliziter Schritt mit
-  eigener Verifikation (Zeilenzahl-Check vor dem Tausch) statt unsichtbar
-  im taeglichen Lauf - im Fehlerfall (z.B. Verbindungsabbruch mitten in der
-  Migration einer 21.600-Zeilen-Tabelle) ist jetzt klar, WANN und WARUM etwas
-  schiefging, statt es in einem automatischen naechtlichen Lauf zu vermuten.
-- **Was NICHT besser geworden ist:** die vierte Beobachtung (fehlendes
-  Compaction-/Snapshot-Management) bleibt unveraendert offen - bewusst, weil
-  bei dieser Datenmenge kein akuter Schmerzpunkt, aber fuer echten
-  Produktivbetrieb weiterhin eine Luecke.
-- **Nachtrag (s. Iteration 3 unten):** Punkt 1 dieser Iteration
-  (Row-Hash-Historie entfernt) wurde direkt danach wieder rueckgaengig
-  gemacht - `gruppe3_etl_row_state`/`gruppe3_etl_changed_keys_tmp` werden
-  zusaetzlich vom Incremental Scheduler gebraucht, was zum Zeitpunkt dieser
-  Iteration nicht bekannt war. Punkte 2 (robustere Iceberg-Erkennung) und 3
-  (Migration als separates Skript) betreffen dieses Thema nicht und bleiben
-  unveraendert bestehen.
+| Alt | Warum verworfen | Ersetzt durch |
+|---|---|---|
+| **Reine Impala-SQL-Pipeline** (`pipeline.py`, alles per SQL-Strings) | Vorgabe Spark/NiFi; `STDDEV` als Window-Funktion in Impala nicht möglich (z-Score!) | ADR-4/5 (Spark-Stufe 3) |
+| **Alte Rohdaten-Kopien in der Gruppen-DB** | Koordinaten in der Kopie durch CSV-Bug zerstört; Original `default.project_*` ist intakt | Stufe 1 liest `default.project_*` (ADR-3) |
+| **Koordinaten-Distanz-Join** Gemeinde→nächste Klimastadt | Scheiterte an zerstörten Koordinaten (P3); danach bewusst der einfachere Namens-Join | ADR-7 |
+| **„Kaputte Zeichen einheitlich entfernen"** (`L�beck`→`Lbeck`) | Erzeugt falsche Namen, die nirgends mehr matchen | ADR-6 (Auflösung über Referenzlisten) |
+| **Hartcodierte `KREIS_CORRECTIONS`** (~90 Einträge im Code) | Veraltet bei neuen Staging-Daten; Pflegeaufwand | ADR-6 (Laufzeit-Erkennung + Referenzlisten, 07.07.) |
+| **`CREATE TABLE … AS SELECT` + Rename-Swap** für den Audit-Merge | Umweg nur nötig, weil Parquet kein UPDATE/MERGE kann; schrieb jedes Mal die ganze Tabelle neu | ADR-13 (Iceberg `MERGE`/`DELETE`, 07.07.) |
+| **`spark.jars`** zum Einbinden des JDBC-Treibers | Braucht unter Windows `winutils.exe` (Crash) | `spark.driver/executor.extraClassPath` |
+| **`df.write.jdbc()`** zum Zurückschreiben | Treiber kann NULL-Parameter nicht typisieren; hat einmal eine Tabelle gedroppt! | ADR-5 (impyla-Batches) |
+| **`spark.createDataFrame(python_liste)`** (dim_jahr) | Python↔JVM-Socket wird von VPN gestört („Accept timed out") | `F.explode(F.sequence(…))` rein JVM-seitig |
+| **Full Load in jeder Stufe, jeden Lauf** | Täglicher Rewrite von 8,6 Mio. Zeilen ohne Not | ADR-8 (Incremental) |
+| **Vier einzelne Skript-Starts**, Docker-CMD = nur Stufe 3 | Stille Reihenfolge-Abhängigkeiten | ADR-9 (`run_pipeline.py`) |
+| **`wohnraumdruck_index` als Verhältnis zweier Wachstumsraten** | Vorzeichen-Falle: −/− = +; spiegelte die Vorzeichen-Kombination, nicht den Druck | Verhältnis von Bestandsgrößen (Einwohner je 1000 m² Bauland), nie negativ |
+| **3 von 4 Bauland-Merkmalen pivotiert** | Das 4. (amtl. Kaufwert/qm) sollte dazu — stellte sich als ab Quelle zerstört heraus (P5) | Alle 4 pivotiert; Spalte im Contract als „nicht verwenden" markiert |
 
-## Iteration 3: Row-Hash-Historie wiederhergestellt (07.07.2026)
+## Gelöste Probleme (Kurzreferenz)
 
-Nach Iteration 2 stellte sich heraus, dass `gruppe3_etl_row_state` und
-`gruppe3_etl_changed_keys_tmp` entgegen der Annahme in Iteration 2 NICHT
-ueberfluessig sind: der Incremental Scheduler braucht diese Zeilenhistorie
-fuer eigene Zwecke, unabhaengig davon, dass `audit_table_keyed_snapshot()`
-selbst technisch auch ohne sie ausgekommen waere (Iteration 2 hatte
-gezeigt, dass ein direkter Vergleich gegen die Iceberg-Audit-Tabelle
-funktional ausreicht - das war architektonisch nicht falsch, hat aber einen
-Konsumenten dieser Daten uebersehen, der ausserhalb von
-`audit_table_keyed_snapshot()` liegt).
+| # | Problem | Lösung | Details |
+|---|---|---|---|
+| P1 | `standortattraktivitaets_score` komplett NULL | Division-durch-0 → Infinity → vergiftete Window-Aggregate → NaN → NULL; `safe_div` + Klima-`coalesce` | [bugfix_score_nullwerte.md](docs/bugfix_score_nullwerte.md), ADR-11 |
+| P2 | Encoding: `L�beck` & Co. in 2 Quelltabellen | Auflösung über Referenzlisten + Transliteration in Stufe 2; 0 Reste verifiziert | ADR-6 |
+| P3 | Alle Gemeinde-Koordinaten NULL → Klima-Brücke tot | Ursache: zerstörte `gruppe3`-Kopie; Umstieg auf intakte `default.project_gemeinden` + Dezimalkomma-Parsing | [bugfix_score_nullwerte.md](docs/bugfix_score_nullwerte.md) |
+| P4 | 6 Spark/JDBC-Stolpersteine | je eigener Workaround | [spark_stolpersteine.md](docs/spark_stolpersteine.md) |
+| P5 | `kaufwert_je_qm_eur` enthält nur 0/NULL | **Nicht behebbar:** amtliche Dezimalwerte beim Quellimport in BIGINT geladen → im Contract als „NICHT VERWENDEN" markiert, `preis_pro_qm_eur` ist der Ersatz | data_contract.yaml |
+| P6 | APScheduler-Crash beim Loggen von `next_run_time` | Zeit direkt vom Trigger erfragen | [scheduler_bug.md](docs/scheduler_bug.md) |
+| P7 | Cloudera-JDBC „Error converting value to double" (`per_km2`, `area_km2`) | Spalten als STRING lesen (`customSchema`) bzw. Kennzahl selbst berechnen | [spark_stolpersteine.md](docs/spark_stolpersteine.md) |
+| P8 | Zeilengenauer Merge für `gemeinden` erkannte Phantom-Änderungen | NULL-Keys kollabieren in `CONCAT_WS`; kein stabiler NULL-freier Schlüssel (empirisch geprüft: selbst `name+PLZ+kreis` bleibt mehrdeutig) → bewusst Tabellen-Prüfsumme | ADR-8 |
+| P9 | Spark scheitert an System-JDK ≥ 23/24 (`getSubject`) | `JAVA_HOME_JDK17` vor `pyspark`-Import selbst setzen | ADR-16, [spark_stolpersteine.md](docs/spark_stolpersteine.md) |
 
-**Rueckgaengig gemacht:** `ROW_STATE_TABLE`/`CHANGED_KEYS_TABLE` und die
-fuenf zugehoerigen Funktionen (`ensure_row_state_table`,
-`get_latest_row_hashes`, `record_row_hashes`, `ensure_changed_keys_table`,
-`load_changed_keys`) sind wieder in `etl_state.py`. `audit_table_keyed_snapshot()`
-ermittelt Aenderungen wieder ueber den Python-seitigen Hash-Diff gegen
-`gruppe3_etl_row_state` (FNV-Hash je Zeile/Business-Key) statt ueber die in
-Iteration 2 eingefuehrte `content_signature()`-Tabellen-Pruefsumme.
+## Offene Punkte
 
-**Bewusst NICHT rueckgaengig gemacht** (beide Punkte betreffen die
-Row-Hash-Frage nicht, bleiben aus Iteration 2 bestehen):
-- `_is_iceberg_table()` liest weiterhin gezielt die `table_type`-Spalte statt
-  einer Substring-Suche.
-- Die Parquet→Iceberg-Migration bleibt ein separates Skript
-  ([src/utils/migrate_audit_tables_to_iceberg.py](src/utils/migrate_audit_tables_to_iceberg.py)),
-  `ensure_iceberg_audit_table()` bricht weiterhin mit klarer Fehlermeldung
-  ab statt lautlos zu migrieren.
-
-Das eigentliche DELETE+MERGE gegen die Iceberg-Audit-Tabelle (der Kern
-dieser ADR) bleibt unveraendert bestehen - nur WELCHE Keys hineingegeben
-werden, wird wieder ueber die Hash-Historie statt direkt in SQL bestimmt.
-
-### Verifikation Iteration 3
-
-- Kompletter End-to-End-Testlauf (Full Load, Skip bei Unveraendertem,
-  gleichzeitiges Update+Delete+Insert) mit der wiederhergestellten
-  `CHANGED_KEYS_TABLE`-gesteuerten Fassung gegen eine isolierte Testtabelle
-  mit demselben zusammengesetzten Schluessel wie `bauland` wiederholt -
-  Ergebnis stimmt weiterhin exakt mit der Erwartung ueberein.
-- Kompletter `pipeline_staging_to_audit.py`-Lauf gegen die echte Datenbank:
-  liest die zu diesem Zeitpunkt bereits vorhandenen historischen Eintraege in
-  `gruppe3_etl_row_state` korrekt ein, erkennt alle vier Tabellen weiterhin
-  korrekt als "unveraendert". Zeilenzahl und Inhalts-Pruefsumme von
-  `gruppe3_audit_bauland`/`gruppe3_audit_bevoelkerungzahlen` weiterhin exakt
-  identisch (21.600 / 581 Zeilen, unveraenderte `content_signature()`-Werte)
-  zum Stand vor allen drei Iterationen - keine der drei Umbauten hat die
-  eigentlichen Daten je angefasst.
-
-### Lehre daraus
-
-Eine Vereinfachung, die nur den Code liest, den man selbst gerade bearbeitet,
-kann einen Konsumenten uebersehen, der an anderer Stelle auf denselben
-State zugreift (hier: der Incremental Scheduler auf
-`gruppe3_etl_row_state`). Ein Grep auf Funktionsnamen im eigenen Repo (wie in
-Iteration 2 gemacht) findet keine Abhaengigkeiten, die nur ueber den
-Tabellennamen selbst laufen oder ausserhalb des durchsuchten Codes liegen.
+Bewusst **nicht** hier dupliziert → [TODO.md](TODO.md) ist die einzige Aufgabenliste.

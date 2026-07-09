@@ -86,8 +86,8 @@ jeweiligen Skripte.
 
 ```
 Data-Mesh/
-├── README.md                        # Diese Datei
-├── ADR.md                           # Vertiefungs-ADR: Apache Iceberg für den Audit-Merge (ersetzt Rename-Swap)
+├── README.md                        # Diese Datei (Setup, Architektur, Benutzung)
+├── ADR.md                           # ALLE Architektur-Entscheidungen (ADR-1..16) + abgelöste + gelöste Probleme
 ├── TODO.md                          # Einzige Aufgabenliste (offene Punkte)
 ├── quellen.txt                      # Herkunft der Referenzlisten (Städte/Kreise)
 ├── requirements.txt                 # Python-Abhängigkeiten (impyla, pyspark, APScheduler, dotenv, PyYAML)
@@ -124,7 +124,7 @@ Data-Mesh/
     ├── data_contract.yaml           # DELIVERABLE 3: Data Contract (Schema, Nutzung, Qualität)
     ├── output_port_ddl.sql          # SQL-Basis für datacontract import sql
     ├── datenmodell_begruendung.md   # DELIVERABLE 1: Begründung des Datenmodells
-    ├── entscheidungen.md            # Architektur-Entscheidungen (ADRs): aktiv + abgelöst + gelöste Probleme
+    ├── entscheidungen.md            # Ausführliche Projekt-Historie (ADR.md ist die kanonische Kurzfassung)
     ├── spark_stolpersteine.md       # Spark-/JDBC-Probleme + Lösungen (Nachschlagewerk)
     ├── bugfix_score_nullwerte.md    # Fallstudie: warum eine KPI-Spalte komplett NULL war
     ├── scheduler_bug.md             # Fallstudie: APScheduler next_run_time
@@ -179,6 +179,13 @@ python -m venv .venv
 # 2. Zugangsdaten: .env.example nach .env kopieren und ausfüllen
 #    (Workload-Username & -Passwort aus dem Cloudera-Portal)
 ```
+
+**Optionale Konfiguration** (Standard reicht für die Abgabe): Die Ziel-Datenbank,
+das Tabellen-Präfix und die Quell-Datenbank sind über die `.env` überschreibbar
+(`DATABASE`=`gruppe3`, `PREFIX`=`gruppe3_`, `SOURCE_DATABASE`=`default`, s.
+[ADR-14](ADR.md)). Ohne Eintrag bleibt alles wie beschrieben. Ausnahme:
+`utils/reset_database.py` ist bewusst fest auf `gruppe3` verdrahtet (Schutz gegen
+versehentliches `DROP TABLE` in einer fremden DB).
 
 **Zusätzlich für Stufe 3 / `run_pipeline.py` / Scheduler (Spark):**
 
@@ -331,6 +338,28 @@ dieselben Tabellen und kämen sich ins Gehege).
 Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
 **[docs/data_contract.yaml](docs/data_contract.yaml)**.
 
+## Datenprodukt konsumieren (Output Port)
+
+Der **Output Port** sind genau die 9 `gruppe3_dim_*`/`gruppe3_fact_*`-Tabellen
+(nicht staging/audit) — beschrieben durch den [Data Contract](docs/data_contract.yaml).
+Konsumenten greifen darauf über denselben Impala-Endpoint zu wie die Pipeline
+(LDAP + HTTP-Transport + SSL, Port 443).
+
+- **SQL / Notebook:** direkt per `impyla`/JDBC gegen `gruppe3.*` (Verbindung wie in [src/db.py](src/db.py)).
+- **BI-Tools (z. B. Power BI):** über den **Cloudera ODBC Driver for Impala** (der
+  native Power-BI-Impala-Connector kann den HTTP-Transport/HTTP-Path des Knox-Gateways
+  meist nicht). ODBC-DSN-Werte 1:1 aus `.env`: Host, Port 443, Auth = „User Name and
+  Password" (LDAP), Transport = HTTP, HTTP Path = `IMPALA_HTTP_PATH`, SSL = an. Import-Modus
+  (nicht DirectQuery, da die Zielfakten klein sind und der Cluster aus dem Ruhezustand
+  „aufwacht"). Das Star-Schema mappt direkt: Fakten (*:1) an `dim_kreis`/`dim_jahr`,
+  Klima an `dim_klimastadt`, Gemeinde-Stamm an `dim_gemeinde`; Kreis-Joins nur über
+  `kreis_id` (nicht `kreis_name`, mehrdeutig — s. Contract).
+
+> Reines **Power BI Online** (Browser) kann private Impala-Quellen nicht direkt
+> anbinden — dafür wird **Power BI Desktop** (kostenlos) zum Bauen des Modells
+> gebraucht, danach „Veröffentlichen"; automatische Aktualisierung im Dienst
+> erfordert zusätzlich ein **On-premises Data Gateway**.
+
 ## Datenqualität: was bereinigt wurde (Kurzfassung)
 
 - **Zerstörte Umlaute** (`L�beck`) in Bauland/Bevölkerung: das Originalzeichen
@@ -377,6 +406,6 @@ Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
    Datenmenge unkritisch), log4j-`ClassCastException` des JDBC-Treibers
    (harmlos, s. [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)).
 
-> **Warum ist alles so gebaut (und was galt früher)?** → [docs/entscheidungen.md](docs/entscheidungen.md) (ADRs + Problem-Historie)
-> **Vertiefung Apache Iceberg** (Audit-Merge, 3 Iterationen inkl. Live-Verifikation): [ADR.md](ADR.md)
+> **Warum ist alles so gebaut (und was galt früher)?** → **[ADR.md](ADR.md)** — alle Architektur-Entscheidungen (ADR-1..16), abgelöste Entscheidungen und gelöste Probleme an einem Ort.
+> Ausführlichere Projekt-Historie (kann ggü. ADR.md veralten): [docs/entscheidungen.md](docs/entscheidungen.md)
 > Hintergrund & Prüfungsvorbereitung: [docs/projekt_notizen.md](docs/projekt_notizen.md)
