@@ -16,6 +16,6 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
-COPY docs/data_contract.yaml ./docs/data_contract.yaml
+COPY data/data_contract.yaml ./data/data_contract.yaml
 
 CMD ["python", "src/run_pipeline.py"]

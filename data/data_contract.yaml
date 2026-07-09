@@ -31,7 +31,7 @@ info:
     Write-Audit-Publish-Pattern mit Incremental Loading (Wasserzeichen fuer
     Klimadaten, zeilengenauer Business-Key-Merge fuer Bauland/Bevoelkerung,
     Inhalts-Pruefsummen sonst; das Star-Schema wird bei Aenderungen komplett
-    neu berechnet). Details: README.md und docs/datenmodell_begruendung.md.
+    neu berechnet). Details: README.md und docs/ADR.md.
   owner: Gruppe 3 (DHBW Stuttgart, Data Mesh & Data Engineering)
   contact:
     name: Gruppe 3
@@ -68,8 +68,7 @@ terms:
       Quellen komplett neu berechnet; es gibt keine Historisierung von
       Laufstaenden.
     - Waehrend eines laufenden Rebuilds koennen die dim_-/fact_-Tabellen
-      kurzzeitig leer oder teilbefuellt sein (TRUNCATE + INSERT,
-      s. README "Offene Punkte").
+      kurzzeitig leer oder teilbefuellt sein (TRUNCATE + INSERT).
     - Klimadaten enden 2013 (Quelle Berkeley Earth): KPI-Werte ab 2014
       behandeln den Klima-Term neutral (0), s. fact_standortprofil_kpi.
     - Keine personenbezogenen Daten: ausschliesslich aggregierte amtliche
@@ -437,7 +436,7 @@ models:
           (= unterdurchschnittlich attraktiv). 3.911 gefuellt.
     quality:
       - type: sql
-        description: Score-Spalte darf nie wieder komplett leer sein (s. docs/bugfix_score_nullwerte.md).
+        description: Score-Spalte darf nie wieder komplett leer sein (s. docs/Probleme.md, Fallstudie 1).
         query: SELECT COUNT(standortattraktivitaets_score) FROM gruppe3_fact_standortprofil_kpi
         mustBeGreaterThan: 0
       - type: sql

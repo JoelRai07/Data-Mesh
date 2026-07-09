@@ -1,5 +1,5 @@
 """
-Publish-Gate: prueft docs/data_contract.yaml live gegen die Impala-Datenbank.
+Publish-Gate: prueft data/data_contract.yaml live gegen die Impala-Datenbank.
 """
 import os
 import sys
@@ -10,7 +10,7 @@ from db import get_connection
 
 DATABASE = os.getenv("DATABASE", "gruppe3")
 CONTRACT_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "docs", "data_contract.yaml"
+    os.path.dirname(os.path.abspath(__file__)), "..", "data", "data_contract.yaml"
 )
 
 # Contract-Typ -> akzeptierte Impala-Typen (DESCRIBE-Schreibweise).
