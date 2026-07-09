@@ -1,13 +1,6 @@
 """
 WAP Stufe 1: source system -> staging table.
-Input: default.project_bauland/project_bevoelkerungzahlen/project_gemeinden/project_klimadaten (unveraendert, kein Schema-Wandel).
-Output: gruppe3_staging_bauland/staging_bevoelkerungzahlen/staging_gemeinden/staging_klimadaten.
 
-Incremental: project_klimadaten per Wasserzeichen (Spalte "dt", APPEND);
-die anderen drei per Inhalts-Pruefsumme + bedingtem Full Refresh (kein
-verlaesslicher Zeilen-Aenderungsindikator, s. etl_state.py).
-
-Ausfuehren:  .venv/Scripts/python.exe src/pipeline_default_to_staging.py
 """
 import os
 

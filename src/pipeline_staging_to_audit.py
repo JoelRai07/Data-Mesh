@@ -1,10 +1,6 @@
 """
 WAP Stufe 2: staging table -> audit table (Bereinigung).
-Input: gruppe3_staging_bauland/staging_bevoelkerungzahlen/staging_gemeinden/staging_klimadaten.
-Output: gruppe3_audit_bauland/audit_bevoelkerungzahlen/audit_gemeinden/audit_klimadaten
-(bauland/bevoelkerungzahlen als Iceberg, s. ADR.md; Rest Parquet).
 
-Ausfuehren:  .venv/Scripts/python.exe src/pipeline_staging_to_audit.py
 """
 import os
 import re

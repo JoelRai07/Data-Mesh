@@ -1,6 +1,5 @@
 """
 Diagnose: gibt Schema + Zeilenzahl + Beispielzeilen der project_*-Tabellen aus (nur Lesen).
-Ausfuehren:  .venv/Scripts/python.exe src/utils/inspect_tables.py
 """
 import os
 import sys

@@ -1,7 +1,3 @@
-"""
-Orchestriert die komplette Pipeline. Input/Output: s. die einzelnen Stufen.
-Ausfuehren:  .venv/Scripts/python.exe src/run_pipeline.py
-"""
 import create_datamodel
 import pipeline_default_to_staging
 import pipeline_staging_to_audit

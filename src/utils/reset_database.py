@@ -3,8 +3,6 @@ Loescht ALLE Tabellen in "gruppe3" nach expliziter Bestaetigung (fuer einen
 sauberen Reset vor End-to-End-Tests). DATABASE ist hartkodiert "gruppe3"
 (kein Parameter), um ein versehentliches Loeschen der Quelldatenbank "default"
 auszuschliessen. DROP TABLE ist nicht rueckgaengig zu machen.
-
-Ausfuehren:  .venv/Scripts/python.exe src/utils/reset_database.py
 """
 import os
 import sys

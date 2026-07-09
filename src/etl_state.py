@@ -1,9 +1,3 @@
-"""
-ETL-Metadaten-Tabellen fuer Incremental Loading. Genutzt von
-pipeline_default_to_staging.py, pipeline_staging_to_audit.py,
-pipeline_audit_to_target.py.
-"""
-
 STATE_TABLE = "gruppe3_etl_state"
 
 CREATE_STATE_TABLE = f"""

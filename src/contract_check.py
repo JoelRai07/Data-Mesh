@@ -1,9 +1,5 @@
 """
 Publish-Gate: prueft docs/data_contract.yaml live gegen die Impala-Datenbank.
-Input: data_contract.yaml + Zieltabellen. Output: Konsolenreport; Exit-Code 1
-bei Vertragsverletzung (Schema/Pflichtfelder/Eindeutigkeit/Quality-SQLs).
-
-Ausfuehren:  .venv/Scripts/python.exe src/contract_check.py
 """
 import os
 import sys

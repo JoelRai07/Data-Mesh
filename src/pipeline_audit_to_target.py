@@ -1,14 +1,6 @@
 """
 WAP Stufe 3: audit table -> Star-Schema (Spark).
-Input: gruppe3_audit_bauland/audit_bevoelkerungzahlen/audit_gemeinden/audit_klimadaten (JDBC-Read).
-Output: gruppe3_dim_kreis/dim_jahr/dim_gemeinde/dim_klimastadt,
-gruppe3_fact_bevoelkerung/fact_bauland/fact_klima/fact_gemeinde_stamm/fact_standortprofil_kpi
-(impyla-Write, s. overwrite_table).
 
-Braucht JDK 17 (JAVA_HOME_JDK17 in .env) und src/utils/ImpalaJDBC42.jar
-(nicht eingecheckt). Details/Stolpersteine: docs/spark_stolpersteine.md.
-
-Ausfuehren:  .venv/Scripts/python.exe src/pipeline_audit_to_target.py
 """
 import math
 import os

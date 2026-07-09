@@ -1,8 +1,3 @@
-"""
-Fuehrt run_pipeline.main() taeglich um 00:00 Uhr aus (APScheduler).
-Input: keins. Output: kompletter Pipeline-Lauf (s. run_pipeline.py).
-Ausfuehren:  .venv/Scripts/python.exe src/scheduler.py
-"""
 import logging
 import os
 import sys

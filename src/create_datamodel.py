@@ -1,9 +1,5 @@
 """
 DDLs fuer das Star-Schema-Datenmodell (Standortprofil-Dashboard).
-Input: keine (reine DDL). Output: 4 Dim- + 5 Fakt-Tabellen in Impala.
-Details: docs/datenmodell_begruendung.md
-
-Ausfuehren:  .venv/Scripts/python.exe src/create_datamodel.py
 """
 import os
 

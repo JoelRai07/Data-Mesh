@@ -3,7 +3,6 @@ Einmalige Migration von gruppe3_audit_bauland/audit_bevoelkerungzahlen von
 Parquet zu Iceberg (Voraussetzung fuer MERGE INTO/DELETE, s. ADR.md).
 Verlustfrei per CTAS + Zeilenzahl-Check + RENAME-Swap; idempotent.
 
-Ausfuehren:  .venv/Scripts/python.exe src/utils/migrate_audit_tables_to_iceberg.py
 """
 import os
 import sys
