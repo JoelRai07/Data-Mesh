@@ -1,43 +1,9 @@
 """
-DELIVERABLE 3b: Technische Durchsetzung des Data Contracts.
+Publish-Gate: prueft docs/data_contract.yaml live gegen die Impala-Datenbank.
+Input: data_contract.yaml + Zieltabellen. Output: Konsolenreport; Exit-Code 1
+bei Vertragsverletzung (Schema/Pflichtfelder/Eindeutigkeit/Quality-SQLs).
 
-Der Prof hat klargestellt, dass der Data Contract nicht nur Dokumentation
-sein soll, sondern TECHNISCH DURCHGESETZT werden muss. Genau das macht
-dieses Skript: es liest docs/data_contract.yaml (die eine Quelle der
-Wahrheit fuer das Datenprodukt-Interface) und prueft den Vertrag live
-gegen die Impala-Datenbank:
-
-  1. SCHEMA:        Jede im Contract beschriebene Tabelle existiert, hat
-                    exakt die vereinbarten Spalten mit den vereinbarten
-                    Typen - und KEINE zusaetzlichen Spalten (der Contract
-                    beschreibt das Interface vollstaendig; eine still
-                    hinzugekommene Spalte waere eine unangekuendigte
-                    Vertragsaenderung).
-  2. PFLICHTFELDER: Spalten mit "required: true" enthalten kein NULL.
-  3. EINDEUTIGKEIT: Spalten mit "primaryKey: true" oder "unique: true"
-                    enthalten keine Duplikate.
-  4. QUALITY-SQLs:  Alle quality-Eintraege vom Typ "sql" werden ausgefuehrt
-                    und gegen mustBe / mustBeGreaterThan / mustBeLessThan
-                    verglichen (quality-Eintraege vom Typ "text" sind
-                    dokumentarisch und werden uebersprungen).
-
-Schlaegt EIN Check fehl, endet das Skript mit Exit-Code 1 - eingebunden als
-letzter Schritt in run_pipeline.py wirkt es damit als PUBLISH-GATE des
-WAP-Patterns: ein Datenstand, der den Vertrag verletzt, laesst den
-Pipeline-Lauf (und damit Docker/Scheduler) sichtbar fehlschlagen, statt
-still fehlerhafte Daten am Output-Port liegen zu lassen.
-
-WARUM EIN EIGENES SKRIPT STATT DIREKT "datacontract test"?
-  Die Data Contract CLI unterstuetzt Impala inzwischen grundsaetzlich.
-  Fuer diese Abgabe ist ein eigenes, kleines Gate trotzdem pragmatischer:
-  es nutzt exakt dieselbe .env-/impyla-Verbindung wie die Pipeline, bringt
-  keine weitere CLI-Abhaengigkeit in Docker/Scheduler und prueft genau die
-  Contract-Teile, die wir im YAML wirklich verwenden. Das YAML bleibt bewusst
-  Data-Contract-Specification-kompatibel, sodass z.B. "datacontract lint"
-  weiterhin darauf funktioniert.
-
-Ausfuehren (auch standalone, nur Python + .env noetig, kein Spark/Java):
-  .venv/Scripts/python.exe src/contract_check.py
+Ausfuehren:  .venv/Scripts/python.exe src/contract_check.py
 """
 import os
 import sys
@@ -52,8 +18,6 @@ CONTRACT_PATH = os.path.join(
 )
 
 # Contract-Typ -> akzeptierte Impala-Typen (DESCRIBE-Schreibweise).
-# Aliase wie integer/long decken die gaengigen Schreibweisen der
-# Data-Contract-Specification ab, falls der Contract sie verwendet.
 TYPE_ALIASES = {
     "string": {"string"},
     "text": {"string"},
@@ -70,12 +34,13 @@ TYPE_ALIASES = {
 
 
 def load_contract():
+    """Output: geparster Data Contract (dict)."""
     with open(CONTRACT_PATH, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 class CheckRunner:
-    """Sammelt Ergebnisse aller Checks; failures entscheidet den Exit-Code."""
+    """Sammelt Check-Ergebnisse; self.failed entscheidet den Exit-Code."""
 
     def __init__(self, cur):
         self.cur = cur
@@ -97,7 +62,8 @@ class CheckRunner:
 
 
 def check_schema(runner, table, fields):
-    """Check 1: Spalten + Typen exakt wie im Contract vereinbart."""
+    """Input: table, Contract-fields. Output: bool (Tabelle erreichbar) -
+    prueft Spalten + Typen exakt wie vereinbart, keine Zusatzspalten."""
     try:
         runner.cur.execute(f"DESCRIBE {table}")
         actual = {row[0]: row[1].strip().lower() for row in runner.cur.fetchall()}
@@ -135,7 +101,8 @@ def check_schema(runner, table, fields):
 
 
 def check_required(runner, table, fields):
-    """Check 2: required-Spalten enthalten kein NULL."""
+    """Input: table, fields. Output: keins (Ergebnisse via runner) -
+    prueft, dass required-Spalten kein NULL enthalten."""
     for col, spec in fields.items():
         if spec.get("required"):
             nulls = runner.scalar(f"SELECT COUNT(*) FROM {table} WHERE {col} IS NULL")
@@ -144,7 +111,8 @@ def check_required(runner, table, fields):
 
 
 def check_unique(runner, table, fields):
-    """Check 3: primaryKey/unique-Spalten sind duplikatfrei."""
+    """Input: table, fields. Output: keins (via runner) -
+    prueft, dass primaryKey/unique-Spalten duplikatfrei sind."""
     for col, spec in fields.items():
         if spec.get("primaryKey") or spec.get("unique"):
             dupes = runner.scalar(
@@ -155,7 +123,8 @@ def check_unique(runner, table, fields):
 
 
 def check_quality(runner, table, quality_entries):
-    """Check 4: quality-Eintraege vom Typ sql ausfuehren und vergleichen."""
+    """Input: table, quality-Eintraege. Output: keins (via runner) - fuehrt
+    sql-Eintraege aus, vergleicht gegen mustBe/mustBeGreaterThan/mustBeLessThan."""
     for entry in quality_entries:
         if entry.get("type") != "sql":
             continue  # "text"-Eintraege sind dokumentarisch

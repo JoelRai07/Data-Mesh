@@ -1,21 +1,7 @@
 """
-DELIVERABLE 1: DDLs zur Erstellung des Datenmodells (Star-Schema)
-
-Erstellt das Datenprodukt-Datenmodell auf Impala fuer den Use Case
-"Standortprofil-Dashboard":
-  - 4 Dimensionstabellen:  dim_kreis, dim_jahr, dim_gemeinde, dim_klimastadt
-  - 5 Faktentabellen:      fact_bevoelkerung, fact_bauland, fact_klima,
-                            fact_gemeinde_stamm, fact_standortprofil_kpi
-
-Eigenschaften (s. Begruendung in docs/datenmodell_begruendung.md):
-  - Star-Schema (denormalisiert) -> wenige Joins, gut fuer OLAP/Analytik
-  - dim_gemeinde ist die Bruecke zwischen Kreis-Ebene (Bevoelkerung/Bauland)
-    und Stadt-Ebene (Klima): Kreis-Zuordnung per Namens-Match, Klimastadt-
-    Zuordnung ebenfalls per Namens-Match nach Transliteration/Exonym-Mapping
-  - fact_standortprofil_kpi ist eine aggregierte Cross-Table-Faktentabelle,
-    die Bevoelkerung + Bauland + Klima + Gemeinde-Stammdaten zu KPIs verdichtet
-  - STORED AS PARQUET -> spaltenorientiert, ideal fuer analytische Abfragen
-  - CREATE TABLE IF NOT EXISTS -> idempotent (mehrfach ausfuehrbar)
+DDLs fuer das Star-Schema-Datenmodell (Standortprofil-Dashboard).
+Input: keine (reine DDL). Output: 4 Dim- + 5 Fakt-Tabellen in Impala.
+Details: docs/datenmodell_begruendung.md
 
 Ausfuehren:  .venv/Scripts/python.exe src/create_datamodel.py
 """
@@ -23,11 +9,7 @@ import os
 
 from db import get_connection
 
-# Unsere Gruppe arbeitet in der Datenbank "gruppe3" (jede Gruppe hat eine eigene),
-# per DATABASE-Env-Var ueberschreibbar (s. .env.example), Default bleibt "gruppe3".
 DATABASE = os.getenv("DATABASE", "gruppe3")
-
-# Praefix passend zur Gruppen-Datenbank.
 PREFIX = os.getenv("PREFIX", "gruppe3_")
 
 DIM_KREIS = PREFIX + "dim_kreis"
@@ -42,12 +24,8 @@ FACT_GEMEINDE_STAMM = PREFIX + "fact_gemeinde_stamm"
 FACT_STANDORTPROFIL_KPI = PREFIX + "fact_standortprofil_kpi"
 
 
-# ---------------------------------------------------------------------------
-# DIMENSIONSTABELLEN (qualitative Daten: das "Wer/Wo/Wann")
-# ---------------------------------------------------------------------------
+# --- Dimensionstabellen ---
 
-# dim_kreis: die geografische Dimension auf Kreis-Ebene.
-# Denormalisiert: Bundesland steht direkt mit drin (Star-Schema, kein Join noetig).
 create_dim_kreis = f"""
 CREATE TABLE IF NOT EXISTS {DIM_KREIS} (
     kreis_id         STRING COMMENT 'Amtlicher Regionalschluessel, 5-stellig (PK), z.B. 01001',
@@ -58,7 +36,6 @@ CREATE TABLE IF NOT EXISTS {DIM_KREIS} (
 STORED AS PARQUET
 """
 
-# dim_jahr: die Zeit-Dimension.
 create_dim_jahr = f"""
 CREATE TABLE IF NOT EXISTS {DIM_JAHR} (
     jahr       INT COMMENT 'Jahr (PK), z.B. 2024',
@@ -67,10 +44,6 @@ CREATE TABLE IF NOT EXISTS {DIM_JAHR} (
 STORED AS PARQUET
 """
 
-# dim_gemeinde: Bruecken-Dimension zwischen Kreis-Ebene und Klimastadt-Ebene.
-# kreis_id wird per Namens-Match (district_kreis -> dim_kreis.kreis_name) aufgeloest.
-# latitude/longitude bleiben als beschreibende Geokoordinaten erhalten; die
-# Klima-Anbindung laeuft inzwischen per Namens-Match, nicht per Distanz-Join.
 create_dim_gemeinde = f"""
 CREATE TABLE IF NOT EXISTS {DIM_GEMEINDE} (
     gemeinde_id      STRING COMMENT 'Surrogat-Schluessel (PK), da Quelle keinen Schluessel hat',
@@ -84,7 +57,6 @@ CREATE TABLE IF NOT EXISTS {DIM_GEMEINDE} (
 STORED AS PARQUET
 """
 
-# dim_klimastadt: deutsche Staedte aus den Klimadaten (distinct city/lat/long).
 create_dim_klimastadt = f"""
 CREATE TABLE IF NOT EXISTS {DIM_KLIMASTADT} (
     stadt_name  STRING COMMENT 'Stadtname (PK), gefiltert auf country = Germany',
@@ -95,12 +67,8 @@ STORED AS PARQUET
 """
 
 
-# ---------------------------------------------------------------------------
-# FAKTENTABELLEN (quantitative Daten: die Kennzahlen / Messwerte)
-# ---------------------------------------------------------------------------
+# --- Faktentabellen ---
 
-# fact_bevoelkerung: Einwohnerzahlen je Kreis und Jahr.
-# Entsteht durch UNPIVOT der breiten Quelltabelle (1 Spalte pro Jahr -> 1 Zeile pro Jahr).
 create_fact_bevoelkerung = f"""
 CREATE TABLE IF NOT EXISTS {FACT_BEVOELKERUNG} (
     kreis_id              STRING COMMENT 'FK -> dim_kreis.kreis_id',
@@ -114,12 +82,6 @@ CREATE TABLE IF NOT EXISTS {FACT_BEVOELKERUNG} (
 STORED AS PARQUET
 """
 
-# fact_bauland: Baulandverkaeufe je Kreis und Jahr.
-# Entsteht durch PIVOT der Quelltabelle (alle 4 Merkmale -> 4 Kennzahl-Spalten).
-# kaufwert_je_qm_eur ist der amtliche Wert des 4. Merkmals "Durchschnittlicher
-# Kaufwert je qm" direkt aus der Quelle, preis_pro_qm_eur bleibt zusaetzlich als
-# selbst berechnete KPI (kaufsumme_tsd_eur / veraeusserte_flaeche_1000qm)
-# erhalten - so lassen sich amtlicher und berechneter Wert vergleichen.
 create_fact_bauland = f"""
 CREATE TABLE IF NOT EXISTS {FACT_BAULAND} (
     kreis_id                       STRING COMMENT 'FK -> dim_kreis.kreis_id',
@@ -135,8 +97,6 @@ CREATE TABLE IF NOT EXISTS {FACT_BAULAND} (
 STORED AS PARQUET
 """
 
-# fact_klima: Durchschnittstemperatur je deutsche Klimastadt und Jahr.
-# FK auf dim_klimastadt statt freiem String (s. Begruendung).
 create_fact_klima = f"""
 CREATE TABLE IF NOT EXISTS {FACT_KLIMA} (
     stadt_name                 STRING COMMENT 'FK -> dim_klimastadt.stadt_name',
@@ -147,7 +107,6 @@ CREATE TABLE IF NOT EXISTS {FACT_KLIMA} (
 STORED AS PARQUET
 """
 
-# fact_gemeinde_stamm: Gemeinde-Stammdaten als Snapshot (Quelle hat keine Zeitreihe, daher kein jahr).
 create_fact_gemeinde_stamm = f"""
 CREATE TABLE IF NOT EXISTS {FACT_GEMEINDE_STAMM} (
     gemeinde_id          STRING COMMENT 'FK -> dim_gemeinde.gemeinde_id',
@@ -161,9 +120,6 @@ CREATE TABLE IF NOT EXISTS {FACT_GEMEINDE_STAMM} (
 STORED AS PARQUET
 """
 
-# fact_standortprofil_kpi: aggregierte Cross-Table-Faktentabelle fuer das Dashboard.
-# Verdichtet fact_bevoelkerung + fact_bauland + fact_klima (ueber dim_gemeinde) +
-# fact_gemeinde_stamm zu Kreis x Jahr-Kennzahlen.
 create_fact_standortprofil_kpi = f"""
 CREATE TABLE IF NOT EXISTS {FACT_STANDORTPROFIL_KPI} (
     kreis_id                          STRING COMMENT 'FK -> dim_kreis.kreis_id',
@@ -196,7 +152,6 @@ def main():
     conn = get_connection()
     cur = conn.cursor()
 
-    # In die Gruppen-Datenbank wechseln, damit die Tabellen dort angelegt werden.
     cur.execute(f"USE {DATABASE}")
     print(f"Datenbank: {DATABASE}\n")
 

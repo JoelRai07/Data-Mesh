@@ -1,48 +1,12 @@
 """
-DELIVERABLE 2 (Spark-Variante): Pipeline zur Befuellung des Datenmodells,
-diesmal wirklich mit Apache Spark (PySpark DataFrame-API) statt mit
-Impala-SQL-Strings wie in pipeline.py.
+WAP Stufe 3: audit table -> Star-Schema (Spark).
+Input: gruppe3_audit_bauland/audit_bevoelkerungzahlen/audit_gemeinden/audit_klimadaten (JDBC-Read).
+Output: gruppe3_dim_kreis/dim_jahr/dim_gemeinde/dim_klimastadt,
+gruppe3_fact_bevoelkerung/fact_bauland/fact_klima/fact_gemeinde_stamm/fact_standortprofil_kpi
+(impyla-Write, s. overwrite_table).
 
-WARUM SO?
-  - Spark wird hier als eigenstaendige Verarbeitungs-Engine genutzt: die
-    bereits bereinigten audit_*-Tabellen (s. pipeline_staging_to_audit.py, STUFE 2 des
-    WAP-Patterns) werden per Spark JDBC-Datasource AUS Impala gelesen
-    (ueber denselben HiveServer2/Impala-Endpoint, den auch impyla nutzt - kein
-    separater Cluster-Zugang noetig), als Spark-DataFrames transformiert und
-    per Spark JDBC-Datasource WIEDER nach Impala zurueckgeschrieben.
-  - Transformationen nutzen bewusst echte Spark-DataFrame-Idiome statt SQL-
-    Strings, weil genau das der Mehrwert von Spark gegenueber der reinen
-    Impala-SQL-Pipeline ist:
-      * Unpivot von fact_bevoelkerung per F.explode(F.array(struct(...))) statt
-        30x UNION ALL (in Impala-SQL mangels UNPIVOT noetig, in Spark unnoetig).
-      * Pivot von fact_bauland per echtem DataFrame.pivot() statt manueller
-        CASE-WHEN-Aggregation.
-      * Window-Funktionen mit AVG()/STDDEV() OVER (PARTITION BY jahr) fuer den
-        z-Score in fact_standortprofil_kpi - das hatte in Impala NICHT
-        funktioniert (STDDEV ist dort keine Analytic-Function), in Spark
-        funktioniert es direkt ueber pyspark.sql.Window.
-
-ACHTUNG - UNGETESTETE ANNAHMEN, DIE IHR VOR DEM ERSTEN LAUF PRUEFEN MUESST:
-  - JDBC-Treiberklasse: "com.cloudera.impala.jdbc.Driver" - direkt aus
-    src/utils/ImpalaJDBC42.jar ausgelesen (META-INF/services/java.sql.Driver),
-    also verifiziert, nicht geraten.
-  - JDBC-Connection-String-Parameter (AuthMech, SSL, transportMode, httpPath):
-    Standard-Syntax des Cloudera-Treibers fuer LDAP+HTTP+SSL, analog zu den
-    Werten, die db.py fuer impyla nutzt. Ggf. anpassen, falls der Treiber
-    andere Parameter-Namen erwartet.
-  - Schreiben: Spark erkennt "jdbc:impala://" nicht als eigenen SQL-Dialekt
-    und faellt auf einen generischen Dialekt zurueck (doppelte Anfuehrungs-
-    zeichen, Typ TEXT) - die Option .option("truncate","true") fuehrt dadurch
-    NICHT zu einem echten TRUNCATE, sondern Spark versucht beim Existenz-Check
-    eine fuer Impala ungueltige Abfrage und faellt auf DROP+CREATE TABLE
-    zurueck, was an Impalas Syntax scheitert (getestet, schlaegt fehl).
-    Workaround: TRUNCATE TABLE wird separat per impyla ausgefuehrt (das
-    Statement, das auch pipeline.py/impyla problemlos versteht), danach
-    schreibt Spark nur noch per mode="append" - reines INSERT, ohne dass
-    Spark irgendetwas am Tabellenschema anfasst.
-
-Der JDBC-Treiber liegt unter src/utils/ImpalaJDBC42.jar (nicht eingecheckt,
-muss lokal vorhanden sein) - Pfad wird unten ueber JDBC_JAR_PATH referenziert.
+Braucht JDK 17 (JAVA_HOME_JDK17 in .env) und src/utils/ImpalaJDBC42.jar
+(nicht eingecheckt). Details/Stolpersteine: docs/spark_stolpersteine.md.
 
 Ausfuehren:  .venv/Scripts/python.exe src/pipeline_audit_to_target.py
 """
@@ -53,18 +17,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# JAVA_HOME_JDK17 MUSS gesetzt sein, BEVOR pyspark importiert wird - Spark
-# startet seine JVM beim ersten SparkSession-Aufruf mit dem zu diesem
-# Zeitpunkt aktuellen JAVA_HOME/PATH. Ohne diesen Block greift bei einem
-# direkten Aufruf dieses Skripts (s. "Ausfuehren" oben) das System-Default-
-# JDK, das bei JDK >= 23/24 an einer entfernten Hadoop-Security-API
-# (Subject.getSubject) scheitert - "UnsupportedOperationException: getSubject
-# is not supported" (s. docs/spark_stolpersteine.md, Stolperstein 1).
-# scheduler.py setzt exakt dasselbe bereits VOR dem Import dieses Moduls
-# (fuer den Fall, dass scheduler.py der Aufrufer ist) - hier zusaetzlich
-# noetig fuer den direkten, eigenstaendigen Aufruf dieser Datei. Pfad kommt
-# bewusst aus der .env (kein hartkodierter Pfad, s. .env.example) - ist die
-# Variable nicht gesetzt, bleibt das System-JAVA_HOME unangetastet.
+# Muss vor dem pyspark-Import gesetzt sein (Spark startet die JVM beim ersten
+# SparkSession-Aufruf mit dem dann aktuellen JAVA_HOME). Ohne JDK 17 scheitert
+# Spark 3.5.x auf JDK >= 23/24 an einer entfernten Hadoop-API (Stolperstein 1).
 JAVA_HOME = os.getenv("JAVA_HOME_JDK17")
 if JAVA_HOME and os.path.isdir(JAVA_HOME):
     os.environ["JAVA_HOME"] = JAVA_HOME
@@ -79,48 +34,27 @@ from etl_state import ensure_state_table, get_latest_state, record_state
 
 DATABASE = os.getenv("DATABASE", "gruppe3")
 JDBC_JAR_PATH = os.path.join(os.path.dirname(__file__), "utils", "ImpalaJDBC42.jar")
-JDBC_DRIVER_CLASS = "com.cloudera.impala.jdbc.Driver"  # verifiziert aus der Jar, s. Hinweis oben
+JDBC_DRIVER_CLASS = "com.cloudera.impala.jdbc.Driver"
 
-# Fachliche Namen der vier Audit-Quelltabellen, aus denen sich das komplette
-# Star-Schema speist (s. AUDIT_SOURCE_TABLES-Nutzung in should_skip_target_build).
 AUDIT_SOURCE_TABLES = ["bauland", "bevoelkerungzahlen", "gemeinden", "klimadaten"]
-
 TRUTHY_VALUES = {"1", "true", "yes", "y", "ja"}
 
 
 def safe_div(numerator, denominator):
-    """
-    Division, die NULL liefert, wenn der Nenner 0 oder NULL ist - statt
-    Infinity (x/0) oder NaN (0/0).
-
-    WARUM WICHTIG: Ein einzelner Infinity-/NaN-Wert vergiftet spaeter jedes
-    Fensteraggregat (AVG()/STDDEV() OVER (...)), das ihn mit einbezieht - das
-    Ergebnis wird komplett NaN. Beim Zurueckschreiben wandelt _sql_literal NaN
-    dann in NULL um. So wurde z.B. die komplette Spalte
-    standortattraktivitaets_score NULL, weil 748 Bauland-Zeilen "Flaeche = 0"
-    haben (Kaufsumme / 0 = Infinity). Details: docs/bugfix_score_nullwerte.md.
-    """
+    """Input: zwei Spark-Columns. Output: Column - NULL statt Infinity/NaN bei Division durch 0."""
     return F.when((denominator == 0) | denominator.isNull(), None).otherwise(
         numerator / denominator
     )
 
 
 def get_spark():
-    # extraClassPath statt spark.jars: spark.jars laesst Spark die Datei intern
-    # ueber Hadoops Utils.fetchFile kopieren/chmod'en - das braucht unter
-    # Windows winutils.exe (nicht vorhanden -> Crash). extraClassPath haengt
-    # den Treiber nur an den JVM-Classpath an, ohne diesen Hadoop-Dateischritt.
+    """Output: SparkSession (local, JDBC-Treiber via extraClassPath, an 127.0.0.1 gebunden)."""
     return (
         SparkSession.builder
         .appName("gruppe3_pipeline_audit_to_target")
         .master("local[*]")
         .config("spark.driver.extraClassPath", JDBC_JAR_PATH)
         .config("spark.executor.extraClassPath", JDBC_JAR_PATH)
-        # Windows-Fix: Treiber/Executor explizit an die lokale Schleife binden,
-        # sonst versuchen Python-Worker-Prozesse oft ueber die falsche
-        # Netzwerkschnittstelle zum Treiber zurueckzuverbinden und laufen in
-        # einen Timeout ("Accept timed out" / "Python worker failed to
-        # connect back").
         .config("spark.driver.host", "127.0.0.1")
         .config("spark.driver.bindAddress", "127.0.0.1")
         .getOrCreate()
@@ -128,6 +62,7 @@ def get_spark():
 
 
 def jdbc_url():
+    """Input: IMPALA_* Env-Vars. Output: JDBC-Connection-String."""
     host = os.getenv("IMPALA_HOST")
     port = os.getenv("IMPALA_PORT", "443")
     http_path = os.getenv("IMPALA_HTTP_PATH")
@@ -141,7 +76,7 @@ def jdbc_url():
 
 
 def read_table(spark, table_name):
-    """Liest eine Tabelle (oder Subquery) aus Impala per Spark-JDBC-Datasource."""
+    """Input: table_name. Output: Spark DataFrame (JDBC-Read aus Impala)."""
     return (
         spark.read.format("jdbc")
         .option("url", jdbc_url())
@@ -152,20 +87,9 @@ def read_table(spark, table_name):
 
 
 def read_gemeinden(spark):
-    """
-    Liest die Gemeinden aus gruppe3_audit_gemeinden (bereits bereinigt, s.
-    pipeline_staging_to_audit.py: municipality_name transliteriert, district_kreis ab
-    dem ersten Komma abgeschnitten + transliteriert). Koordinaten sind dort
-    unveraendert im Komma-Dezimalformat der Quelle ("9,43751").
-
-    Zwei JDBC-Fallstricke werden hier umgangen:
-    1) Der Cloudera-JDBC-Treiber wirft bei den double-Spalten area_km2/per_km2
-       "[Cloudera][JDBC](10140) Error converting value to double" (getDouble).
-       -> per `customSchema` als STRING lesen (getString), dann in Spark casten.
-    2) Ein Subquery-dbtable ("(SELECT ...) t") liefert mit diesem Treiber teils
-       0 Zeilen an Spark. -> Deshalb die volle Tabelle lesen (kein Subquery)
-       und die Typen nur via customSchema ueberschreiben.
-    """
+    """Output: DataFrame aus gruppe3_audit_gemeinden. area_km2/per_km2 werden
+    als STRING gelesen und area_km2 zu double gecastet (Treiber wirft sonst
+    einen Konvertierungsfehler auf diesen Spalten)."""
     return (
         spark.read.format("jdbc")
         .option("url", jdbc_url())
@@ -178,15 +102,8 @@ def read_gemeinden(spark):
 
 
 def truncate_table(table_name):
-    """
-    Leert die Zieltabelle per impyla (TRUNCATE TABLE), BEVOR Spark schreibt.
-    Grund: Spark erkennt den Impala-JDBC-Dialekt nicht und wuerde bei
-    .option("truncate","true") versuchen, Existenz-Check/CREATE TABLE mit
-    einem generischen (fuer Impala syntaktisch falschen) SQL-Dialekt
-    auszufuehren - s. Hinweis im Modul-Docstring. TRUNCATE TABLE selbst
-    versteht Impala über impyla aber problemlos (gleiches Pattern wie in
-    pipeline.py).
-    """
+    """Input: table_name. Output: leert die Tabelle per impyla TRUNCATE
+    (Spark erkennt den Impala-JDBC-Dialekt nicht, s. Modul-Docstring)."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"USE {DATABASE}")
@@ -196,41 +113,24 @@ def truncate_table(table_name):
 
 
 def _sql_literal(value):
-    """Wandelt einen Python-/Spark-Wert in ein SQL-Literal fuer INSERT...VALUES um."""
+    """Input: Python-/Spark-Wert. Output: SQL-Literal fuer INSERT ... VALUES."""
     if value is None:
         return "NULL"
     if isinstance(value, float):
         if math.isnan(value) or math.isinf(value):
-            # Impala kann NaN/Infinity nicht als DOUBLE-Literal parsen -
-            # fachlich ist das sowieso ein "nicht definierter" KPI-Wert (z.B.
-            # Division durch 0 bei fehlenden Vorjahresdaten), also NULL.
             return "NULL"
         return repr(value)
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     if isinstance(value, (int,)):
         return str(value)
-    # String: einfache Anfuehrungszeichen escapen
     return "'" + str(value).replace("'", "''") + "'"
 
 
 def overwrite_table(df, table_name, batch_size=500):
-    """
-    Sammelt die Ergebniszeilen ein, leert danach die Zieltabelle
-    (truncate_table) und schreibt per impyla als INSERT INTO ... VALUES
-    (...)-Batches.
-
-    WARUM NICHT df.write.jdbc(...)?
-    Probiert, schlaegt aber zuverlaessig fehl: der Impala-JDBC-Treiber kann
-    bei parametrisierten Batch-Inserts (PreparedStatement) den SQL-Typ eines
-    Parameters nicht bestimmen, wenn dessen Wert NULL ist
-    (HIVE_PARAMETER_QUERY_DATA_TYPE_ERR_NON_SUPPORT_DATA_TYPE) - und unsere
-    Tabellen haben durchgehend NULL-faehige Spalten (z.B. nicht zuordenbare
-    kreis_id in dim_gemeinde, KPIs mit Division durch 0 im ersten Jahr usw.).
-    Deshalb: Zeilen zum Treiber holen (collect() - bei unseren Datengroessen
-    von ein paar zehntausend Zeilen unproblematisch) und als reinen SQL-Text
-    einfuegen, ganz ohne Parameter-Bindung.
-    """
+    """Input: DataFrame, table_name. Output: keins - truncated die Zieltabelle
+    und schreibt die Zeilen per impyla INSERT-Batches (df.write.jdbc()
+    scheitert am Treiber bei NULL-Parametern, s. ADR/Stolpersteine)."""
     rows = df.collect()
     truncate_table(table_name)
 
@@ -255,9 +155,7 @@ def overwrite_table(df, table_name, batch_size=500):
     conn.close()
 
 
-# ---------------------------------------------------------------------------
-# DIMENSIONEN
-# ---------------------------------------------------------------------------
+# --- Dimensionen ---
 
 BUNDESLAND_NAMEN = {
     "01": "Schleswig-Holstein", "02": "Hamburg", "03": "Niedersachsen",
@@ -270,6 +168,7 @@ BUNDESLAND_NAMEN = {
 
 
 def build_dim_kreis(spark):
+    """Input: gruppe3_audit_bevoelkerungzahlen. Output: DataFrame dim_kreis."""
     bev = read_table(spark, "gruppe3_audit_bevoelkerungzahlen")
 
     bundesland_expr = F.create_map([F.lit(x) for kv in BUNDESLAND_NAMEN.items() for x in kv])
@@ -287,14 +186,8 @@ def build_dim_kreis(spark):
 
 
 def build_dim_jahr(spark):
-    """
-    Vereinigung der Bauland-Jahre mit dem bekannten Bevoelkerungs-Zeitraum
-    1995-2024. Die Jahresliste wird per F.sequence()/F.explode() rein auf der
-    JVM-Seite erzeugt (NICHT per spark.createDataFrame(python_liste) - das
-    wuerde einen Python-Hilfsprozess fuer die Datenuebergabe brauchen, der
-    unter Windows/mit aktivem VPN haeufig an Netzwerk-Timeouts scheitert,
-    s. "Accept timed out" beim ersten Testlauf).
-    """
+    """Input: gruppe3_audit_bauland (Jahre) + fester Bereich 1995-2024.
+    Output: DataFrame dim_jahr."""
     bauland_jahre = (
         read_table(spark, "gruppe3_audit_bauland")
         .select(F.col("jahr").cast(IntegerType()).alias("jahr"))
@@ -311,13 +204,7 @@ def build_dim_jahr(spark):
 
 
 def build_dim_klimastadt(spark):
-    """
-    country = 'Germany' ist bereits in gruppe3_audit_klimadaten gefiltert und
-    city bereits transliteriert (s. pipeline_staging_to_audit.py). latitude/longitude
-    liegen dort im selben Komma-Dezimalformat wie gruppe3_audit_gemeinden vor
-    (Himmelsrichtungs-Buchstabe/Vorzeichen-Umrechnung ist schon im Audit-
-    Schritt erledigt) - Parsing hier daher identisch zu build_dim_gemeinde.
-    """
+    """Input: gruppe3_audit_klimadaten. Output: DataFrame dim_klimastadt."""
     klima = read_table(spark, "gruppe3_audit_klimadaten")
     return klima.select(
         F.col("city").alias("stadt_name"),
@@ -327,18 +214,9 @@ def build_dim_klimastadt(spark):
 
 
 def build_dim_gemeinde(spark, dim_kreis):
-    """
-    Bruecken-Dimension. DATENQUALITAET: project_gemeinden hat ein CSV-Parsing-
-    Problem (Kommas in Gemeindenamen verschieben alle Folgespalten) - wir
-    laden daher nur Zeilen mit area_km2 IS NOT NULL (verlaesslicher Indikator
-    fuer "nicht verrutscht"), analog zur Begruendung in pipeline.py.
-
-    Kreis-Zuordnung per Fuzzy-Match (kreis_name enthaelt den bereinigten
-    district_kreis-Text) statt Gleichheit, weil die Schreibweisen abweichen
-    (z.B. "Flensburg" vs. "Flensburg, kreisfreie Stadt"). Bei mehreren
-    Treffern wird per Window/row_number der laengste (= spezifischste)
-    Kreisname gewaehlt.
-    """
+    """Input: gruppe3_audit_gemeinden, dim_kreis. Output: DataFrame dim_gemeinde -
+    Kreis-Zuordnung per Fuzzy-Match (kreis_name enthaelt district_kreis),
+    bei Mehrdeutigkeit gewinnt der laengste/spezifischste Kreisname."""
     gem = (
         read_gemeinden(spark)
         .filter(F.col("area_km2").isNotNull())
@@ -368,25 +246,16 @@ def build_dim_gemeinde(spark, dim_kreis):
         F.col("kreis_id"),
         F.col("state_land").alias("bundesland_name"),
         F.col("postal_code"),
-        # Deutsches Dezimalkomma -> Punkt, dann in double wandeln (9,43751 -> 9.43751).
-        # Klimadaten liegen nach dem Audit-Schritt im selben Format vor (s.
-        # build_dim_klimastadt), das hier verwendete Parsing ist identisch.
         F.regexp_replace(F.col("latitude"), ",", ".").cast("double").alias("latitude"),
         F.regexp_replace(F.col("longitude"), ",", ".").cast("double").alias("longitude"),
     )
 
 
-# ---------------------------------------------------------------------------
-# BASIS-FAKTEN
-# ---------------------------------------------------------------------------
+# --- Basis-Fakten ---
 
 def build_fact_bevoelkerung(spark):
-    """
-    Unpivot per F.explode(F.array(struct(...))): fuer jedes Jahr 1995-2024
-    wird ein struct(jahr, einwohner_*) gebaut, alle structs landen in einem
-    array, explode() macht daraus eine Zeile pro Jahr - der idiomatische
-    Spark-Ersatz fuer ein generisches UNPIVOT.
-    """
+    """Input: gruppe3_audit_bevoelkerungzahlen (92 Spalten, 1 Zeile/Kreis).
+    Output: DataFrame fact_bevoelkerung (1 Zeile/Kreis+Jahr, per explode/array unpivotiert)."""
     bev = read_table(spark, "gruppe3_audit_bevoelkerungzahlen").filter(F.length("id") == 5)
 
     jahres_structs = [
@@ -423,21 +292,8 @@ def build_fact_bevoelkerung(spark):
 
 
 def build_fact_bauland(spark):
-    """
-    Echtes DataFrame.pivot() statt CASE-WHEN-Aggregation (so wie in
-    pipeline.py mangels Pivot-Support in einfachem Impala-SQL geloest).
-    Die merkmal-Spalte war durch einen Encoding-Fehler beschaedigt
-    ('Ver?u?erungsfaelle...' statt 'Veraeusserungsfaelle...'), das ist aber
-    bereits im Audit-Schritt auf feste, saubere Werte korrigiert (s.
-    BAULAND_MERKMAL_CORRECTIONS in pipeline_staging_to_audit.py) - hier reicht daher ein
-    einfacher Gleichheitsvergleich statt der frueheren rlike-Heuristik.
-
-    Alle 4 Merkmale der Quelle werden pivotiert (nicht nur 3 wie zuvor):
-    "Durchschnittlicher Kaufwert je qm" ist der amtliche Wert und wird 1:1 als
-    kaufwert_je_qm_eur uebernommen - zusaetzlich zur weiterhin selbst
-    berechneten KPI preis_pro_qm_eur (kaufsumme_tsd_eur / veraeusserte_flaeche_1000qm),
-    damit amtlicher und berechneter Wert vergleichbar bleiben.
-    """
+    """Input: gruppe3_audit_bauland (4 Merkmale je Kreis+Jahr, lange Form).
+    Output: DataFrame fact_bauland (pivotiert: je 1 Spalte pro Merkmal)."""
     bauland = read_table(spark, "gruppe3_audit_bauland").filter(F.length("kreis_id") == 5)
 
     kategorisiert = bauland.withColumn(
@@ -476,10 +332,8 @@ def build_fact_bauland(spark):
 
 
 def build_fact_klima(spark):
-    # country = 'Germany' ist bereits in gruppe3_audit_klimadaten gefiltert,
-    # city bereits transliteriert (s. pipeline_staging_to_audit.py) - dieselbe
-    # Schreibweise wie dim_klimastadt.stadt_name/dim_gemeinde.gemeinde_name,
-    # damit der Namens-Join in build_fact_standortprofil_kpi funktioniert.
+    """Input: gruppe3_audit_klimadaten. Output: DataFrame fact_klima
+    (Jahresmittel + Abweichung vom Referenzmittel 1961-1990)."""
     klima = read_table(spark, "gruppe3_audit_klimadaten").filter(
         F.col("averagetemperature").isNotNull()
     ).withColumn("jahr", F.substring("dt", 1, 4).cast(IntegerType()))
@@ -507,8 +361,9 @@ def build_fact_klima(spark):
 
 
 def build_fact_gemeinde_stamm(spark, dim_gemeinde):
-    # Aus gruppe3_audit_gemeinden lesen (s. read_gemeinden); area_km2 kommt
-    # als String und wird dort sicher in double gewandelt.
+    """Input: gruppe3_audit_gemeinden, dim_gemeinde. Output: DataFrame fact_gemeinde_stamm.
+    per_km2 wird nicht aus der Quelle gelesen (Treiber-Konvertierungsfehler),
+    sondern selbst berechnet (population_total / area_km2)."""
     dedupe_window = Window.partitionBy("municipality_name", "postal_code").orderBy(
         F.col("district_kreis").asc_nulls_last(),
         F.col("latitude").asc_nulls_last(),
@@ -534,63 +389,19 @@ def build_fact_gemeinde_stamm(spark, dim_gemeinde):
         F.col("female").alias("einwohner_weiblich"),
         F.round(safe_div(100.0 * F.col("female"), F.col("population_total")), 2).alias("anteil_weiblich_pct"),
         F.col("area_km2"),
-        # per_km2 aus der Quelle NICHT lesen: der Cloudera-JDBC-Treiber wirft dort
-        # bei manchen Zeilen "Error converting value to double". Die Dichte
-        # berechnen wir stattdessen selbst (population_total / area_km2, fachlich
-        # identisch) - so wird die problematische Spalte gar nicht erst gelesen.
         F.round(safe_div(F.col("population_total"), F.col("area_km2")), 2).alias("einwohner_pro_km2"),
     )
 
 
-# ---------------------------------------------------------------------------
-# CROSS-TABLE-KPI-FAKT
-# ---------------------------------------------------------------------------
+# --- Cross-Table-KPI-Fakt ---
 
 def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_bauland, fact_klima, fact_gemeinde_stamm):
-    """
-    Verdichtet alle Basis-Fakten zu Kreis x Jahr-KPIs. Klima haengt nur auf
-    Stadt-Ebene, daher ueber dim_gemeinde + Klimastadt gleichen Namens
-    (gemeinde_name == stadt_name, beide Seiten transliteriert in
-    pipeline_staging_to_audit.py) auf Kreis-Ebene hochaggregiert.
-
-    WARUM NAMENS- STATT KOORDINATEN-JOIN?
-    Frueher wurde ueber die naechstgelegene Klimastadt per euklidischer lat/
-    long-Distanz gematcht. Der Namens-Join ist einfacher, deckt aber nur
-    Faelle ab, in denen der Gemeindename nach der Transliteration EXAKT dem
-    Klimastadt-Namen entspricht - von den 81 deutschen Staedten in
-    gruppe3_audit_klimadaten matchen so ca. 59 (der Rest sind englische
-    Namen wie "Munich"/"Cologne" oder mehrdeutige Kurzformen wie "Frankfurt",
-    die sowohl zu "Frankfurt am Main" als auch "Frankfurt (Oder)" passen
-    wuerden). Bewusst kein Fuzzy-/Contains-Match: bei mehrdeutigen Kurz-
-    namen (z.B. "Oldenburg" passt auf 7 Gemeinden) waere die Auswahl reine
-    Rateroei. Gemeinden ohne Namens-Treffer bleiben ohne Klimawert (per
-    LEFT JOIN + fillna 0.0 unten, wie zuvor bei fehlenden Koordinaten).
-    Nachbereinigung: Der Wechsel weg vom Distanz-Match kostet Genauigkeit,
-    ist bei Bedarf spaeter ueber eine manuelle Korrekturliste (aehnlich
-    KREIS_CORRECTIONS) fuer die bekannten Sonderfaelle nachschaerfbar.
-
-    wohnraumdruck_index (und darauf aufbauend klima_angepasstes_wohnraumrisiko)
-    war urspruenglich ein Verhaeltnis zweier Wachstumsraten
-    (bevoelkerungswachstum_pct / bauland_angebotswachstum_pct). Das erzeugte
-    fachlich falsche Vorzeichen: negativ/negativ ergibt positiv, positiv/negativ
-    ergibt negativ - das Vorzeichen spiegelte also die Vorzeichen-KOMBINATION
-    beider Wachstumsraten wider, nicht den tatsaechlichen Druck (Beispiel:
-    Ostallgaeu 2021 mit wachsender Bevoelkerung + schrumpfendem Bauland-
-    Angebot - eigentlich Lehrbuch-Beispiel fuer hohen Druck - bekam den
-    negativsten Wert im Datensatz, waehrend Eisenach 2021 mit kollabierender
-    Bevoelkerung den hoechsten "Druck"-Wert bekam). Jetzt stattdessen ein
-    Verhaeltnis von Bestandsgroessen (Einwohner je 1000 qm NEU veraeusserter
-    Baulandflaeche) - beide Groessen sind nie negativ, daher ist auch der
-    Index nie negativ und steigt monoton mit dem tatsaechlichen Druck
-    (mehr Einwohner pro verfuegbarer Flaeche = mehr Druck).
-
-    standortattraktivitaets_score ist ein echter z-Score per
-    AVG()/STDDEV() OVER (PARTITION BY jahr) - in Spark direkt moeglich
-    (anders als in Impala, wo STDDEV keine Analytic-Function ist - s.
-    Hinweis in pipeline.py). Negative Werte sind hier bewusst und korrekt
-    (= unterdurchschnittlich attraktiv ggue. allen Kreisen desselben Jahres),
-    anders als beim alten wohnraumdruck_index.
-    """
+    """Input: dim_gemeinde + alle Basis-Fakten. Output: DataFrame fact_standortprofil_kpi
+    (6 KPIs je Kreis+Jahr). Klima wird ueber dim_gemeinde per Namens-Match auf
+    Kreis-Ebene aggregiert (Gemeindename == Klimastadtname, beide transliteriert);
+    fehlender Klimawert zaehlt neutral (0) statt den ganzen Score zu NULLen.
+    standortattraktivitaets_score ist ein z-Score (AVG/STDDEV OVER PARTITION BY jahr).
+    Zeilen ohne jeden KPI-Wert werden verworfen."""
     bev = fact_bevoelkerung.select("kreis_id", "jahr", "einwohner_insgesamt", "wachstum_vorjahr_pct")
 
     bau = fact_bauland.select(
@@ -653,10 +464,6 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
                 F.col("preis_pro_qm_eur") - F.avg("preis_pro_qm_eur").over(jahr_window),
                 F.stddev("preis_pro_qm_eur").over(jahr_window),
             )
-            # Klima-Term: mit coalesce(..., 0) abgesichert, damit ein fehlender
-            # Klimawert (z.B. weil die Gemeinde-Koordinaten in den Rohdaten
-            # zerstoert sind, s. docs/bugfix_score_nullwerte.md) den GESAMTEN
-            # Score nicht auf NULL zieht. Fehlt Klima, zaehlt es neutral (0).
             - F.coalesce(
                 F.abs(
                     safe_div(
@@ -670,13 +477,6 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
         ).alias("standortattraktivitaets_score"),
     )
 
-    # Zeilen verwerfen, bei denen ALLE 6 KPI-Spalten NULL sind (komplett
-    # uninformative Kreis+Jahr-Kombination, z.B. weil weder Bauland- noch
-    # Klima- noch Gemeinde-Dichte-Daten fuer dieses Jahr vorlagen). Bewusst
-    # NICHT einfach nach einer einzelnen Spalte (z.B. wohnraumdruck_index)
-    # gefiltert - das wuerde auch Zeilen loeschen, die z.B. noch einen
-    # gueltigen verstaedterung_index haben (kommt vor, da dieser unabhaengig
-    # vom Bauland-Join berechnet wird).
     KPI_SPALTEN = [
         "wohnraumdruck_index", "baulandpreis_pro_kopf_eur", "freiflaeche_pro_einwohner_qm",
         "klima_angepasstes_wohnraumrisiko", "verstaedterung_index", "standortattraktivitaets_score",
@@ -684,43 +484,15 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
     return result.filter(F.coalesce(*KPI_SPALTEN).isNotNull())
 
 
-# ---------------------------------------------------------------------------
-# INCREMENTAL LOADING - STUFE 3 (audit -> target)
-# ---------------------------------------------------------------------------
-#
-# Das Star-Schema selbst bleibt bewusst Full Reload (s. should_skip_target_build
-# und die Erklaerung dort) - Unpivot/Pivot sowie die Fenster-Funktionen
-# AVG()/STDDEV() OVER (PARTITION BY jahr) in build_fact_standortprofil_kpi
-# brauchen ohnehin JEDE Zeile der betroffenen Kreis+Jahr-Partition, ein
-# "nur die neuen Zeilen nachrechnen" wuerde bei bestehenden Jahren falsche
-# Durchschnitte/Standardabweichungen liefern. Die Ziel-Faktentabellen sind mit
-# ca. 400 Kreisen x 30 Jahren zudem klein (Groessenordnung 10.000-15.000
-# Zeilen) - anders als bei gruppe3_staging_klimadaten (8,6 Mio. Zeilen) lohnt
-# sich ein inkrementeller Teil-Rebuild hier fachlich nicht.
-#
-# Der EINE Punkt, an dem trotzdem unnoetige Arbeit vermieden wird: der
-# komplette Spark-Lauf (JVM-Start, JDBC-Reads, Neuberechnung, impyla-
-# Batch-Writes) wird uebersprungen, wenn sich SEIT DEM LETZTEN Ziel-Build
-# keine der vier Audit-Tabellen veraendert hat (s. should_skip_target_build).
-# Das ist besonders relevant, weil scheduler.py diese Pipeline taeglich
-# (im Testmodus sogar minuetlich) aufruft, waehrend pipeline_default_to_staging.py/
-# pipeline_staging_to_audit.py aktuell manuell und deutlich seltener laufen.
-
+# --- Incremental Loading Stufe 3 ---
+# Star-Schema bleibt Full Reload (Window-Funktionen brauchen ohnehin jede
+# Zeile der Partition, Zieltabellen sind klein). Einzige Optimierung: der
+# komplette Spark-Lauf wird uebersprungen, wenn seit dem letzten Ziel-Build
+# keine Audit-Tabelle neuer ist (s. should_skip_target_build).
 
 def should_skip_target_build(cur):
-    """
-    Liest den Aufzeichnungszeitpunkt des letzten erfolgreichen Ziel-Builds
-    (stage="target") und vergleicht ihn mit dem juengsten Aenderungszeitpunkt
-    der vier Audit-Tabellen. record_state() in pipeline_staging_to_audit.py wird
-    NUR aufgerufen, wenn eine Audit-Tabelle tatsaechlich neu verarbeitet wurde
-    (s. dortige audit_table_incremental/audit_table_snapshot) - der juengste
-    recorded_at-Wert je Audit-Tabelle ist daher exakt "wann hat sich dieser
-    Audit-Stand zuletzt inhaltlich veraendert".
-
-    True, wenn seit dem letzten Ziel-Build nichts Neues vorliegt (Spark-Lauf
-    kann uebersprungen werden). False, wenn noch nie gebaut wurde oder
-    mindestens eine Audit-Tabelle neuer ist als der letzte Ziel-Build.
-    """
+    """Input: Cursor. Output: bool - True, wenn keine der vier Audit-Tabellen
+    neuer ist als der letzte Ziel-Build (record_state stage="target")."""
     target_state = get_latest_state(cur, "target", "all")
     if target_state is None:
         return False
@@ -734,13 +506,9 @@ def should_skip_target_build(cur):
 
 
 def should_force_target_build():
-    """Erzwingt den Target-Rebuild bei Code-/Contract-Aenderungen ohne neue Audit-Daten."""
+    """Input: FORCE_TARGET_BUILD Env-Var. Output: bool."""
     return os.getenv("FORCE_TARGET_BUILD", "").strip().lower() in TRUTHY_VALUES
 
-
-# ---------------------------------------------------------------------------
-# AUSFUEHRUNG
-# ---------------------------------------------------------------------------
 
 def main():
     conn = get_connection()
