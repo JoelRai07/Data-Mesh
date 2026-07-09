@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Muss vor dem run_pipeline-Import gesetzt sein (JDK 17 fuer PySpark, s.
+# Muss vor dem run_pipeline-Import gesetzt sein (JDK 17 für PySpark, s.
 # pipeline_audit_to_target.py).
 JAVA_HOME = os.getenv("JAVA_HOME_JDK17")
 if JAVA_HOME and os.path.isdir(JAVA_HOME):
@@ -46,7 +46,7 @@ def main():
         trigger=trigger,
         id="daily_pipeline_run",
         name="Taeglicher Pipeline-Lauf (00:00 Uhr)",
-        misfire_grace_time=3600,  # bis zu 1h Verspaetung (z.B. nach Rechner-Standby) noch nachholen
+        misfire_grace_time=3600,  # bis zu 1h Verspätung (z.B. nach Rechner-Standby) noch nachholen
     )
 
     next_run = trigger.get_next_fire_time(None, datetime.now(scheduler.timezone))
