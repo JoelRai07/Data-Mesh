@@ -98,6 +98,7 @@ Tabellenart (ADR-8), Bereinigung in Impala-SQL / Transformationen in Spark
 **Kontext:** Pflicht-Deliverable; Data-Mesh-Prinzipien „Data as a Product" + „Federated Governance".
 **Entscheidung:** [data_contract.yaml](../data/data_contract.yaml) nach Data-Contract-Specification: Owner, Server, Nutzungs-Terms, alle 9 Modelle mit Spalten-Semantik, Servicelevels, **live gemessene** Qualitätszahlen und Beispiel-Queries. Zusätzlich [src/contract_check.py](../src/contract_check.py) als **technisches Gate** (Stage 4/4 in `run_pipeline.py`): prüft Schema, `required`-Felder, Eindeutigkeit und ausführbare `quality`-SQLs live gegen Impala, Exit-Code 1 bei Verstoß.
 **Warum:** Konsumenten sollen das Produkt nutzen können **ohne uns zu fragen**; ehrliche, messbare Qualität schafft Vertrauen. Das eigene Gate ergänzt die Data-Contract-CLI, weil die Pipeline bereits über `impyla` gegen dieselbe Umgebung läuft (die CLI scheitert lokal am HTTP-Transport, s. README).
+**Verifiziert (09.07.):** `datacontract lint` grün (CLI 1.0.10). Ein testweise per `import sql` aus den Output-Port-DDLs generiertes Gerüst enthält exakt dasselbe Schema, aber keinerlei Constraints/Semantik/Terms/Quality — Vergleich und Einordnung: README, Abschnitt „Handgeschriebener Contract vs. CLI-generiertes Gerüst".
 **Trade-off:** Die Qualitätszahlen sind ein datierter Snapshot und müssen bei Datenänderung nachgezogen werden.
 
 ### ADR-13 · Apache Iceberg für den zeilengenauen Audit-Merge *(neu 07.07.)*

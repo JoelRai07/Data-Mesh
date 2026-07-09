@@ -362,6 +362,58 @@ den konkreten DHBW-Output-Port läuft über `src/contract_check.py` — kein
 Ersatz für die CLI, sondern ein zusätzliches Pipeline-Gate, weil die Pipeline
 bereits über `impyla` gegen dieselbe Impala-Umgebung läuft.
 
+### Handgeschriebener Contract vs. CLI-generiertes Gerüst
+
+Zur Einordnung, was die CLI beiträgt (und was nicht), wurde der Contract am
+09.07.2026 testweise per `datacontract import sql` (CLI 1.0.10) aus
+`data/output_port_ddl.sql` neu generiert. Ergebnis: **das Schema stimmt 1:1
+mit unserem Contract überein** (9 Tabellen, alle Spalten und Typen) — mehr
+kann der Import aber prinzipbedingt nicht liefern, denn mehr steht nicht in
+einer DDL. Dieselbe Spalte im direkten Vergleich:
+
+```yaml
+# CLI-generiert (nur, was aus der DDL ableitbar ist):
+- name: kreis_id
+  physicalType: STRING
+  logicalType: string
+```
+
+```yaml
+# data/data_contract.yaml (fachlich angereichert):
+kreis_id:
+  type: string
+  required: true      # nie NULL
+  unique: true        # keine Duplikate
+  primaryKey: true
+  description: Amtlicher Regionalschluessel, 5-stellig, z.B. '01001' (Flensburg).
+```
+
+| Bestandteil | CLI-Import | Manuell ergänzt |
+|---|---|---|
+| Tabellen, Spalten, Typen | ✓ automatisch, tippfehlerfrei aus der DDL | – |
+| Constraints (`required`/`primaryKey`/`unique`) | – | ✓ |
+| Spalten-Semantik inkl. Warnungen (z. B. `kaufwert_je_qm_eur`: „NICHT VERWENDEN") | – | ✓ |
+| `terms` (Join-Regeln, Transliteration, Surrogat-Warnung) | – | ✓ |
+| `servers` (erst damit ist `datacontract test` möglich) | – | ✓ |
+| `quality` (ausführbare SQLs + live gemessene Zahlen) | – | ✓ |
+| `examples`, `servicelevels`, Owner/Kontakt | – | ✓ |
+
+**Was der CLI-Workflow bringt:** (1) das mechanische Gerüst entsteht in
+Sekunden und ist per Konstruktion fehlerfrei, weil die DDL die Quelle der
+Wahrheit ist; (2) **Drift-Erkennung** — nach einer Schema-Änderung neu
+generieren und gegen den gepflegten Contract diffen, statt still zu
+veralten; (3) das Gerüst ist ab der ersten Zeile spezifikationskonform.
+Die Arbeitsteilung ist genau der empfohlene Weg „automatisiert erstellen,
+manuell ergänzen": die CLI liefert das *Was* (Schema), das Team den
+fachlichen Gehalt (*Wie nutzt man es korrekt, was ist garantiert, was ist
+kaputt*) — unser Contract entspricht dem Endzustand dieses Workflows.
+
+Hinweis: Die CLI exportiert beim Import standardmäßig das **ODCS**-Format
+(Open Data Contract Standard, `kind: DataContract`/`schema:`) — der zweite
+große Contract-Standard neben der hier genutzten **Data Contract
+Specification 1.1.0** (`models:`/`fields:`). Beide Standards konvergieren;
+`datacontract lint`/`test` verstehen beide.
+
 ## Docker
 
 Der Container enthält Python, PySpark und JDK 17; die Impala-Datenbank bleibt
