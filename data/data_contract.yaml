@@ -1,13 +1,9 @@
 # =============================================================================
 # DELIVERABLE 3: Data Contract
-#
 # Beschreibt das Datenprodukt "Standortprofil deutscher Kreise" (Datenbank
 # gruppe3): welche Tabellen es gibt, was die Spalten bedeuten, wie man das
 # Produkt korrekt konsumiert - und ehrlich gemessene Datenqualitaet
 # (alle Kennzahlen live gegen Impala gemessen, Stand: 2026-07-06).
-#
-# Format angelehnt an die Data Contract Specification (datacontract.com),
-# wie in der Vorlesung (entropy-data-Demo) gezeigt.
 # =============================================================================
 dataContractSpecification: 1.1.0
 id: urn:datacontract:gruppe3:standortprofil
