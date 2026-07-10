@@ -313,10 +313,47 @@ def _is_iceberg_table(cur, table_name):
     return False
 
 
+def _migrate_parquet_to_iceberg(cur, table_name):
+    """Input: table_name (bestehende Parquet-Audit-Tabelle). Output: keins - migriert
+    verlustfrei zu Iceberg (Voraussetzung fuer MERGE INTO/DELETE, s. ADR-13) per
+    CTAS + Zeilenzahl-Check + RENAME-Swap. Das Original bleibt bis zum verifizierten
+    Tausch unangetastet; RuntimeError bei Zeilenzahl-Abweichung."""
+    cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+    before_count = cur.fetchone()[0]
+    print(f"  {table_name}: ist noch Parquet ({before_count} Zeilen) - migriere zu Iceberg ...")
+
+    migrated_table = f"{table_name}_iceberg"
+    old_table = f"{table_name}_pre_iceberg"
+
+    cur.execute(f"DROP TABLE IF EXISTS {migrated_table}")
+    cur.execute(
+        f"CREATE TABLE {migrated_table} STORED BY ICEBERG TBLPROPERTIES('format-version'='2') "
+        f"AS SELECT * FROM {table_name}"
+    )
+
+    cur.execute(f"SELECT COUNT(*) FROM {migrated_table}")
+    after_count = cur.fetchone()[0]
+    if after_count != before_count:
+        # Original noch unangetastet: nur die Kopie aufraeumen, dann abbrechen.
+        cur.execute(f"DROP TABLE IF EXISTS {migrated_table}")
+        raise RuntimeError(
+            f"Migration von {table_name} abgebrochen: Kopie hat {after_count} "
+            f"statt {before_count} Zeilen. Original wurde NICHT veraendert."
+        )
+
+    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+    cur.execute(f"ALTER TABLE {table_name} RENAME TO {old_table}")
+    cur.execute(f"ALTER TABLE {migrated_table} RENAME TO {table_name}")
+    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+
+    print(f"  {table_name}: migriert - {after_count} Zeilen verifiziert, jetzt Iceberg.")
+
+
 def ensure_iceberg_audit_table(cur, audit_table_name, staging_table):
-    """Input: audit_table_name, staging_table. Output: legt audit_table_name frisch
-    als Iceberg an, falls nicht vorhanden; RuntimeError, falls sie noch Parquet ist
-    (Migration: src/utils/migrate_audit_tables_to_iceberg.py)."""
+    """Input: audit_table_name, staging_table. Output: stellt sicher, dass die
+    Audit-Tabelle als Iceberg vorliegt - legt sie frisch als Iceberg an, falls nicht
+    vorhanden, und migriert sie automatisch verlustfrei von Parquet zu Iceberg, falls
+    ein Altbestand noch Parquet ist (s. ADR-13). Idempotent."""
     if not _table_exists(cur, audit_table_name):
         cur.execute(
             f"CREATE TABLE {audit_table_name} STORED BY ICEBERG "
@@ -325,12 +362,7 @@ def ensure_iceberg_audit_table(cur, audit_table_name, staging_table):
         return
 
     if not _is_iceberg_table(cur, audit_table_name):
-        raise RuntimeError(
-            f"{audit_table_name} existiert noch als Parquet-Tabelle, braucht fuer "
-            "MERGE INTO/DELETE aber Iceberg. Bitte einmalig "
-            "'.venv/Scripts/python.exe src/utils/migrate_audit_tables_to_iceberg.py' "
-            "ausfuehren und die Pipeline danach erneut starten."
-        )
+        _migrate_parquet_to_iceberg(cur, audit_table_name)
 
 
 def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, select_list, base_where, key_columns):

@@ -118,7 +118,6 @@ Data-Mesh/
 │   └── utils/
 │       ├── inspect_tables.py        # Zeigt Schema + Zeilenzahl der Rohtabellen
 │       ├── reset_database.py        # Löscht ALLE gruppe3-Tabellen (Reset für End-to-End-Tests, fragt nach)
-│       ├── migrate_audit_tables_to_iceberg.py  # EINMALIG: Audit-Tabellen Parquet → Iceberg (s. Einrichtung)
 │       ├── german_cities.txt        # Referenzliste Städte/Orte (für Encoding-Auflösung in Stufe 2)
 │       ├── german_regions.txt       # Referenzliste Landkreise + kreisfreie Städte
 │       ├── german_states.txt        # Referenzliste der 16 Bundesländer
@@ -281,20 +280,15 @@ fremden DB).
 Die Stufen 1+2 einzeln und alle `utils/`-Skripte brauchen **kein** Java —
 nur Python + `.env`.
 
-**Einmalige Iceberg-Migration (nur falls die Audit-Tabellen noch als Parquet
-existieren):** Stufe 2 erwartet `gruppe3_audit_bauland` und
-`gruppe3_audit_bevoelkerungzahlen` als Apache-Iceberg-Tabellen
-([ADR-13](docs/ADR.md)). Bestehende Parquet-Bestände müssen einmalig migriert
-werden — sonst bricht `pipeline_staging_to_audit.py` mit einer klaren
-Fehlermeldung ab:
-
-```bash
-.venv/Scripts/python.exe src/utils/migrate_audit_tables_to_iceberg.py
-```
-
-Das Skript ist idempotent (erkennt „bereits Iceberg" und tut dann nichts) und
-verifiziert die Zeilenzahl vor dem Tausch. Die zentralen Gruppen-Tabellen sind
-bereits migriert; der Schritt betrifft vor allem frische Test-/Reset-Umgebungen.
+**Iceberg-Audit-Tabellen (automatisch):** Stufe 2 erwartet
+`gruppe3_audit_bauland` und `gruppe3_audit_bevoelkerungzahlen` als
+Apache-Iceberg-Tabellen ([ADR-13](docs/ADR.md)). Darum kümmert sich die Pipeline
+selbst: `ensure_iceberg_audit_table()` in
+[src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py) legt eine
+fehlende Tabelle direkt als Iceberg an und migriert einen Parquet-Altbestand beim
+Lauf **automatisch verlustfrei** (CTAS + Zeilenzahl-Check + `RENAME`-Swap; das
+Original bleibt bis zum verifizierten Tausch unangetastet). Kein separater
+Migrationsschritt nötig — der Fall betrifft ohnehin nur frische Test-/Reset-Umgebungen.
 
 ## Benutzung
 
