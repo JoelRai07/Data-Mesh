@@ -1,0 +1,317 @@
+<mxfile host="65bd71144e">
+    <diagram id="page-star" name="KPI Star-Schema">
+        <mxGraphModel dx="1167" dy="1159" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="826" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="pqpfw-YPd_opt1YYBlGt-1" value="" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="30" y="200" width="1060" height="230" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kreis" value="dim_kreis" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="260" width="230" height="106" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kreis_1" value="PK  kreis_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="s_kreis" vertex="1">
+                    <mxGeometry y="26" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kreis_2" value="kreis_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kreis" vertex="1">
+                    <mxGeometry y="46" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kreis_3" value="bundesland_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kreis" vertex="1">
+                    <mxGeometry y="66" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kreis_4" value="bundesland_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kreis" vertex="1">
+                    <mxGeometry y="86" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_jahr" value="dim_jahr" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="880" y="280" width="200" height="66" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_jahr_1" value="PK  jahr" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="s_jahr" vertex="1">
+                    <mxGeometry y="26" width="200" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_jahr_2" value="jahrzehnt" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_jahr" vertex="1">
+                    <mxGeometry y="46" width="200" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi" value="fact_standortprofil_kpi" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=28;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;strokeWidth=2;fontSize=13;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="210" width="320" height="208" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_1" value="FK  kreis_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="28" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_2" value="FK  jahr" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="48" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_3" value="wohnraumdruck_index" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="68" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_4" value="baulandpreis_pro_kopf_eur" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="88" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_5" value="freiflaeche_pro_einwohner_qm" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="108" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_6" value="klima_angepasstes_wohnraumrisiko" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="128" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_7" value="verstaedterung_index" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="148" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_kpi_8" value="standortattraktivitaets_score" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="s_kpi" vertex="1">
+                    <mxGeometry y="168" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_e1" value="kreis_id" style="edgeStyle=entityRelationEdgeStyle;html=1;fontSize=10;rounded=0;endArrow=ERmany;startArrow=ERone;" parent="1" source="s_kreis" target="s_kpi_1" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="s_e2" value="jahr" style="edgeStyle=entityRelationEdgeStyle;html=1;fontSize=10;rounded=0;endArrow=ERmany;startArrow=ERone;" parent="1" source="s_jahr" target="s_kpi_2" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="page-galaxy" name="Galaxy-Schema (ganzes Produkt)">
+        <mxGraphModel dx="1240" dy="1231" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="VfgyVbuqzc5SRs1TCWvE-2" value="" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="60" y="300" width="1150" height="630" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_jahr" value="dim_jahr" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="360" width="200" height="66" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_jahr_1" value="PK  jahr" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_jahr" vertex="1">
+                    <mxGeometry y="26" width="200" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_jahr_2" value="jahrzehnt" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_jahr" vertex="1">
+                    <mxGeometry y="46" width="200" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kreis" value="dim_kreis" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="560" width="230" height="106" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kreis_1" value="PK  kreis_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_kreis" vertex="1">
+                    <mxGeometry y="26" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kreis_2" value="kreis_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kreis" vertex="1">
+                    <mxGeometry y="46" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kreis_3" value="bundesland_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kreis" vertex="1">
+                    <mxGeometry y="66" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kreis_4" value="bundesland_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kreis" vertex="1">
+                    <mxGeometry y="86" width="230" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klimastadt" value="dim_klimastadt" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1" vertex="1">
+                    <mxGeometry x="880" y="440" width="220" height="86" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klimastadt_1" value="PK  stadt_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_klimastadt" vertex="1">
+                    <mxGeometry y="26" width="220" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klimastadt_2" value="latitude" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_klimastadt" vertex="1">
+                    <mxGeometry y="46" width="220" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klimastadt_3" value="longitude" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_klimastadt" vertex="1">
+                    <mxGeometry y="66" width="220" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde" value="dim_gemeinde  (Brücke)" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+                    <mxGeometry x="880" y="560" width="240" height="166" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde_1" value="PK  gemeinde_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_gemeinde" vertex="1">
+                    <mxGeometry y="26" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde_2" value="gemeinde_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gemeinde" vertex="1">
+                    <mxGeometry y="46" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde_3" value="FK  kreis_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_gemeinde" vertex="1">
+                    <mxGeometry y="66" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde_4" value="bundesland_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gemeinde" vertex="1">
+                    <mxGeometry y="86" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde_5" value="postal_code" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gemeinde" vertex="1">
+                    <mxGeometry y="106" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde_6" value="latitude" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gemeinde" vertex="1">
+                    <mxGeometry y="126" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gemeinde_7" value="longitude" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gemeinde" vertex="1">
+                    <mxGeometry y="146" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev" value="fact_bevoelkerung" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="360" width="260" height="166" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev_1" value="FK  kreis_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_bev" vertex="1">
+                    <mxGeometry y="26" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev_2" value="FK  jahr" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_bev" vertex="1">
+                    <mxGeometry y="46" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev_3" value="einwohner_insgesamt" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bev" vertex="1">
+                    <mxGeometry y="66" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev_4" value="einwohner_maennlich" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bev" vertex="1">
+                    <mxGeometry y="86" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev_5" value="einwohner_weiblich" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bev" vertex="1">
+                    <mxGeometry y="106" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev_6" value="geschlechterquotient" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bev" vertex="1">
+                    <mxGeometry y="126" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bev_7" value="wachstum_vorjahr_pct" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bev" vertex="1">
+                    <mxGeometry y="146" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau" value="fact_bauland" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="700" width="300" height="206" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_1" value="FK  kreis_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="26" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_2" value="FK  jahr" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="46" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_3" value="anzahl_veraeusserungsfaelle" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="66" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_4" value="veraeusserte_flaeche_1000qm" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="86" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_5" value="kaufsumme_tsd_eur" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="106" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_6" value="kaufwert_je_qm_eur  (nicht verwenden)" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;fontColor=#999999;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="126" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_7" value="preis_pro_qm_eur" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="146" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_8" value="anteil_baureif_pct" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="166" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_bau_9" value="durchschnittsfall_qm" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_bau" vertex="1">
+                    <mxGeometry y="186" width="300" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klima" value="fact_klima" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="880" y="310" width="240" height="106" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klima_1" value="FK  stadt_name" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_klima" vertex="1">
+                    <mxGeometry y="26" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klima_2" value="FK  jahr" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_klima" vertex="1">
+                    <mxGeometry y="46" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klima_3" value="avg_temperatur" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_klima" vertex="1">
+                    <mxGeometry y="66" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_klima_4" value="temperatur_abweichung_grad" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_klima" vertex="1">
+                    <mxGeometry y="86" width="240" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst" value="fact_gemeinde_stamm" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=26;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+                    <mxGeometry x="880" y="750" width="260" height="166" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst_1" value="FK  gemeinde_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_gst" vertex="1">
+                    <mxGeometry y="26" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst_2" value="einwohner_total" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gst" vertex="1">
+                    <mxGeometry y="46" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst_3" value="einwohner_maennlich" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gst" vertex="1">
+                    <mxGeometry y="66" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst_4" value="einwohner_weiblich" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gst" vertex="1">
+                    <mxGeometry y="86" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst_5" value="anteil_weiblich_pct" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gst" vertex="1">
+                    <mxGeometry y="106" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst_6" value="area_km2" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gst" vertex="1">
+                    <mxGeometry y="126" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_gst_7" value="einwohner_pro_km2" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_gst" vertex="1">
+                    <mxGeometry y="146" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi" value="fact_standortprofil_kpi" style="swimlane;fontStyle=1;align=center;verticalAlign=top;childLayout=stackLayout;horizontal=1;startSize=28;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;strokeWidth=2;fontSize=13;" parent="1" vertex="1">
+                    <mxGeometry x="500" y="600" width="320" height="188" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_1" value="FK  kreis_id" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="28" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_2" value="FK  jahr" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontStyle=4;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="48" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_3" value="wohnraumdruck_index" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="68" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_4" value="baulandpreis_pro_kopf_eur" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="88" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_5" value="freiflaeche_pro_einwohner_qm" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="108" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_6" value="klima_angepasstes_wohnraumrisiko" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="128" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_7" value="verstaedterung_index" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="148" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_kpi_8" value="standortattraktivitaets_score" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=6;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=11;html=1;" parent="g_kpi" vertex="1">
+                    <mxGeometry y="168" width="320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_e_bev_kreis" style="edgeStyle=entityRelationEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="g_kreis_1" target="g_bev_1" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_e_bev_jahr" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;entryX=1.003;entryY=0.114;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="g_jahr" target="g_bev" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="210" y="360" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="530" y="379"/>
+                            <mxPoint x="530" y="379"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="g_e_bau_kreis" style="edgeStyle=entityRelationEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;" parent="1" source="g_kreis" target="g_bau_1" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_e_bau_jahr" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;entryX=0.997;entryY=0.35;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="g_jahr" target="g_bau_3" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="450" y="410"/>
+                            <mxPoint x="450" y="773"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="g_e_klima_stadt" style="edgeStyle=entityRelationEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;" parent="1" source="g_klimastadt" target="g_klima_1" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_e_klima_jahr" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;" parent="1" source="g_jahr" target="g_klima_2" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_e_gst_gem" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;entryX=1;entryY=0.096;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryPerimeter=0;" parent="1" source="g_gemeinde_3" target="g_gst_4" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="1040" y="750" as="sourcePoint"/>
+                        <mxPoint x="1180" y="960" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="g_e_kpi_kreis" style="edgeStyle=entityRelationEdgeStyle;html=1;rounded=0;endArrow=ERmany;startArrow=ERone;strokeColor=#d79b00;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="g_kreis_3" target="g_kpi_1" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="g_e_kpi_jahr" style="html=1;rounded=0;endArrow=ERmany;startArrow=ERone;strokeColor=#d79b00;strokeWidth=2;exitX=0.505;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;" parent="1" source="g_jahr_2" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="640" y="600" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="g_e_gem_kreis" value="Namens-Match (LEFT JOIN, 97,5%)" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=ERone;startArrow=ERmany;dashed=1;fontSize=10;strokeColor=#d6b656;entryX=1;entryY=0.5;entryDx=0;entryDy=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="g_gemeinde_3" target="g_kreis_4" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="840" y="636"/>
+                            <mxPoint x="840" y="830"/>
+                            <mxPoint x="480" y="830"/>
+                            <mxPoint x="480" y="656"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="g_e_gem_klima" value="Namens-Match (Brücke Klima)" style="edgeStyle=orthogonalEdgeStyle;html=1;rounded=0;endArrow=none;dashed=1;fontSize=10;strokeColor=#d6b656;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="g_gemeinde_2" target="g_klimastadt_2" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
