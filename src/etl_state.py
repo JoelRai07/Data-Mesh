@@ -155,9 +155,7 @@ def get_latest_state(cur, stage, table_name):
 
 
 def _sql_string_or_null(value):
-    """SQL-Literal fuer einen optionalen String-Wert (NULL, falls nicht gesetzt).
-    Einfache Anfuehrungszeichen werden escaped (gleiches Muster wie
-    _sql_literal in pipeline_audit_to_target.py)."""
+    """Input: optionaler Wert. Output: SQL-Literal (NULL oder gequoteter String)."""
     if value is None:
         return "NULL"
     return "'" + str(value).replace("'", "''") + "'"
@@ -196,35 +194,14 @@ def record_state(cur, stage, table_name, watermark_value=None, content_hash=None
 
 
 def get_columns(cur, table_name):
-    """Spaltenliste einer Tabelle per DESCRIBE (gleiche Technik wie in
-    pipeline_staging_to_audit.py) - hier wiederverwendet, um die
-    Inhalts-Pruefsumme generisch fuer beliebige Snapshot-Tabellen zu bauen."""
+    """Input: table_name. Output: Liste der Spaltennamen."""
     cur.execute(f"DESCRIBE {table_name}")
     return [row[0] for row in cur.fetchall()]
 
 
 def content_signature(cur, table_name, columns):
-    """
-    Inhalts-Pruefsumme einer Snapshot-Tabelle OHNE verlaesslichen
-    Aenderungsindikator (kein Datum/keine ID, die zuverlaessig waechst,
-    und amtliche Statistiken koennen nachtraeglich revidiert werden - s.
-    Begruendung in pipeline_default_to_staging.py, warum bauland/
-    bevoelkerungzahlen/gemeinden NICHT per Wasserzeichen inkrementell
-    geladen werden).
-
-    Rein serverseitig in Impala berechnet (FNV_HASH je Zeile, SUM() als
-    Aggregat) - kein Herunterladen der Daten noetig, auch fuer breite
-    Tabellen wie bevoelkerungzahlen (92 Spalten) unproblematisch, da die
-    Spaltenliste wie in pipeline_staging_to_audit.py per DESCRIBE ermittelt wird.
-
-    KEIN kryptographischer Hash, sondern reine Change-Detection: Ziel ist
-    "hat sich der Tabelleninhalt seit dem letzten Lauf ueberhaupt
-    veraendert", nicht Manipulationssicherheit. SUM() statt eines
-    XOR-Aggregats, weil SUM bei zufaelligen Kollisionen zwischen zwei
-    Zeilen (z.B. eine geloescht, eine inhaltsgleiche neu hinzugefuegt)
-    seltener zufaellig auf denselben Wert zurueckfaellt als ein
-    kommutatives XOR.
-    """
+    """Input: table_name, columns. Output: (row_count, content_hash) - Pruefsumme
+    ueber alle Zeilen/Spalten, fuer Change-Detection ohne verlaesslichen Key."""
     col_list = ", ".join(f"CAST({c} AS STRING)" for c in columns)
     cur.execute(
         f"SELECT COUNT(*), SUM(fnv_hash(CONCAT_WS('|', {col_list}))) FROM {table_name}"

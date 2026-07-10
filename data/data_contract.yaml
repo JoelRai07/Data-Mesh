@@ -1,13 +1,9 @@
 # =============================================================================
 # DELIVERABLE 3: Data Contract
-#
 # Beschreibt das Datenprodukt "Standortprofil deutscher Kreise" (Datenbank
 # gruppe3): welche Tabellen es gibt, was die Spalten bedeuten, wie man das
 # Produkt korrekt konsumiert - und ehrlich gemessene Datenqualitaet
 # (alle Kennzahlen live gegen Impala gemessen, Stand: 2026-07-06).
-#
-# Format angelehnt an die Data Contract Specification (datacontract.com),
-# wie in der Vorlesung (entropy-data-Demo) gezeigt.
 # =============================================================================
 dataContractSpecification: 1.1.0
 id: urn:datacontract:gruppe3:standortprofil
@@ -42,15 +38,17 @@ info:
 servers:
   production:
     type: impala
-    host: dein-impala-host.example.com
+    host: dhbw-impala-master10.dhbw-cdp.lovivu.b0.cloudera.site
     port: 443
     description: |
-      Cloudera CDP / Impala der DHBW Stuttgart. Host, Port und HTTP-Pfad wie in
-      .env.example dokumentiert; Authentifizierung per persoenlichem
-      Workload-User (LDAP) aus dem Cloudera-Portal. Zugriff nur aus dem
-      DHBW-Kontext.
+      Cloudera CDP / Impala der DHBW Stuttgart (HTTP-Transport ueber SSL,
+      Port 443). Authentifizierung per persoenlichem Workload-User (LDAP)
+      aus dem Cloudera-Portal - fuer "datacontract test" als
+      Umgebungsvariablen DATACONTRACT_IMPALA_USERNAME /
+      DATACONTRACT_IMPALA_PASSWORD setzen (keine Credentials im Contract).
+      Zugriff nur aus dem DHBW-Kontext.
     database: gruppe3
-    http_path: cliservice
+    http_path: dhbw-impala/cdp-proxy-api/impala
 
 terms:
   usage: |
@@ -441,7 +439,7 @@ models:
           (= unterdurchschnittlich attraktiv). 3.911 gefuellt.
     quality:
       - type: sql
-        description: Score-Spalte darf nie wieder komplett leer sein (s. docs/bugfix_score_nullwerte.md).
+        description: Score-Spalte darf nie wieder komplett leer sein (s. docs/Probleme.md, Fallstudie 1).
         query: SELECT COUNT(standortattraktivitaets_score) FROM gruppe3_fact_standortprofil_kpi
         mustBeGreaterThan: 0
       - type: sql

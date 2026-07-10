@@ -1,0 +1,205 @@
+version: 1.0.0
+kind: DataContract
+apiVersion: v3.1.0
+id: my-data-contract
+name: My Data Contract
+status: draft
+schema:
+- name: gruppe3_dim_kreis
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_dim_kreis
+  properties:
+  - name: kreis_id
+    physicalType: STRING
+    logicalType: string
+  - name: kreis_name
+    physicalType: STRING
+    logicalType: string
+  - name: bundesland_id
+    physicalType: STRING
+    logicalType: string
+  - name: bundesland_name
+    physicalType: STRING
+    logicalType: string
+- name: gruppe3_dim_jahr
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_dim_jahr
+  properties:
+  - name: jahr
+    physicalType: INT
+    logicalType: integer
+  - name: jahrzehnt
+    physicalType: INT
+    logicalType: integer
+- name: gruppe3_dim_gemeinde
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_dim_gemeinde
+  properties:
+  - name: gemeinde_id
+    physicalType: STRING
+    logicalType: string
+  - name: gemeinde_name
+    physicalType: STRING
+    logicalType: string
+  - name: kreis_id
+    physicalType: STRING
+    logicalType: string
+  - name: bundesland_name
+    physicalType: STRING
+    logicalType: string
+  - name: postal_code
+    physicalType: STRING
+    logicalType: string
+  - name: latitude
+    physicalType: DOUBLE
+    logicalType: number
+  - name: longitude
+    physicalType: DOUBLE
+    logicalType: number
+- name: gruppe3_dim_klimastadt
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_dim_klimastadt
+  properties:
+  - name: stadt_name
+    physicalType: STRING
+    logicalType: string
+  - name: latitude
+    physicalType: DOUBLE
+    logicalType: number
+  - name: longitude
+    physicalType: DOUBLE
+    logicalType: number
+- name: gruppe3_fact_bevoelkerung
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_fact_bevoelkerung
+  properties:
+  - name: kreis_id
+    physicalType: STRING
+    logicalType: string
+  - name: jahr
+    physicalType: INT
+    logicalType: integer
+  - name: einwohner_insgesamt
+    physicalType: BIGINT
+    logicalType: integer
+  - name: einwohner_maennlich
+    physicalType: BIGINT
+    logicalType: integer
+  - name: einwohner_weiblich
+    physicalType: BIGINT
+    logicalType: integer
+  - name: geschlechterquotient
+    physicalType: DOUBLE
+    logicalType: number
+  - name: wachstum_vorjahr_pct
+    physicalType: DOUBLE
+    logicalType: number
+- name: gruppe3_fact_bauland
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_fact_bauland
+  properties:
+  - name: kreis_id
+    physicalType: STRING
+    logicalType: string
+  - name: jahr
+    physicalType: INT
+    logicalType: integer
+  - name: anzahl_veraeusserungsfaelle
+    physicalType: BIGINT
+    logicalType: integer
+  - name: veraeusserte_flaeche_1000qm
+    physicalType: BIGINT
+    logicalType: integer
+  - name: kaufsumme_tsd_eur
+    physicalType: BIGINT
+    logicalType: integer
+  - name: kaufwert_je_qm_eur
+    physicalType: DOUBLE
+    logicalType: number
+  - name: preis_pro_qm_eur
+    physicalType: DOUBLE
+    logicalType: number
+  - name: anteil_baureif_pct
+    physicalType: DOUBLE
+    logicalType: number
+  - name: durchschnittsfall_qm
+    physicalType: DOUBLE
+    logicalType: number
+- name: gruppe3_fact_klima
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_fact_klima
+  properties:
+  - name: stadt_name
+    physicalType: STRING
+    logicalType: string
+  - name: jahr
+    physicalType: INT
+    logicalType: integer
+  - name: avg_temperatur
+    physicalType: DOUBLE
+    logicalType: number
+  - name: temperatur_abweichung_grad
+    physicalType: DOUBLE
+    logicalType: number
+- name: gruppe3_fact_gemeinde_stamm
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_fact_gemeinde_stamm
+  properties:
+  - name: gemeinde_id
+    physicalType: STRING
+    logicalType: string
+  - name: einwohner_total
+    physicalType: BIGINT
+    logicalType: integer
+  - name: einwohner_maennlich
+    physicalType: BIGINT
+    logicalType: integer
+  - name: einwohner_weiblich
+    physicalType: BIGINT
+    logicalType: integer
+  - name: anteil_weiblich_pct
+    physicalType: DOUBLE
+    logicalType: number
+  - name: area_km2
+    physicalType: DOUBLE
+    logicalType: number
+  - name: einwohner_pro_km2
+    physicalType: DOUBLE
+    logicalType: number
+- name: gruppe3_fact_standortprofil_kpi
+  physicalType: table
+  logicalType: object
+  physicalName: gruppe3_fact_standortprofil_kpi
+  properties:
+  - name: kreis_id
+    physicalType: STRING
+    logicalType: string
+  - name: jahr
+    physicalType: INT
+    logicalType: integer
+  - name: wohnraumdruck_index
+    physicalType: DOUBLE
+    logicalType: number
+  - name: baulandpreis_pro_kopf_eur
+    physicalType: DOUBLE
+    logicalType: number
+  - name: freiflaeche_pro_einwohner_qm
+    physicalType: DOUBLE
+    logicalType: number
+  - name: klima_angepasstes_wohnraumrisiko
+    physicalType: DOUBLE
+    logicalType: number
+  - name: verstaedterung_index
+    physicalType: DOUBLE
+    logicalType: number
+  - name: standortattraktivitaets_score
+    physicalType: DOUBLE
+    logicalType: number

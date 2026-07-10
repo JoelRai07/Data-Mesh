@@ -1,24 +1,12 @@
 """
-Loescht ALLE Tabellen in der Datenbank "gruppe3" - fuer einen sauberen
-Reset vor einem End-to-End-Test der Incremental-Loader-Pipeline (s.
-run_pipeline.py), z.B. um Full-Load- von Skip-Verhalten klar zu trennen
-(erster Lauf nach dem Reset = alles neu, jeder weitere Lauf ohne Reset =
-Incremental/Skip, s. Diskussion zum Testen der Pipeline).
-
-RUEHRT NUR AN DATABASE = "gruppe3" (die eigene Gruppendatenbank), NIEMALS an
-"default" (die geteilte Quelldatenbank mit project_bauland/project_bevoelkerungzahlen/
-project_gemeinden/project_klimadaten) - DATABASE ist hartkodiert, kein Parameter,
-genau um ein versehentliches Loeschen der Quelle auszuschliessen.
-
-Fragt vor dem eigentlichen Loeschen eine explizite Bestaetigung ab (Tabellen-
-liste wird vorher angezeigt) - DROP TABLE ist nicht rueckgaengig zu machen.
-
-Ausfuehren:  .venv/Scripts/python.exe src/utils/reset_database.py
+Loescht ALLE Tabellen in "gruppe3" nach expliziter Bestaetigung (fuer einen
+sauberen Reset vor End-to-End-Tests). DATABASE ist hartkodiert "gruppe3"
+(kein Parameter), um ein versehentliches Loeschen der Quelldatenbank "default"
+auszuschliessen. DROP TABLE ist nicht rueckgaengig zu machen.
 """
 import os
 import sys
 
-# db.py liegt eine Ebene hoeher (in src/), s. gleiches Muster in inspect_tables.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import get_connection

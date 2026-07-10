@@ -128,7 +128,6 @@ from etl_state import (
 DATABASE = os.getenv("DATABASE", "gruppe3")
 PREFIX = os.getenv("PREFIX", "gruppe3_")
 
-# Name des Basistabellen-Themas -> Staging-/Audit-Tabellenname
 STAGING_TABLES = {
     "bauland": PREFIX + "staging_bauland",
     "bevoelkerungzahlen": PREFIX + "staging_bevoelkerungzahlen",
@@ -137,10 +136,6 @@ STAGING_TABLES = {
 }
 AUDIT_TABLES = {name: PREFIX + "audit_" + name for name in STAGING_TABLES}
 
-# Nur klimadaten ist eine echte, verlaesslich anhaengende Zeitreihe (Spalte
-# "dt") -> Wasserzeichen-Append. Der Rest sind Snapshots amtlicher
-# Statistiken/Stammdaten ohne verlaesslichen Aenderungsindikator auf
-# Zeilenebene -> Change Detection per Inhalts-Pruefsumme (s. Modul-Docstring).
 TIME_SERIES_TABLES = {"klimadaten"}
 TIME_SERIES_WATERMARK_COLUMN = "dt"
 SNAPSHOT_TABLES = set(STAGING_TABLES) - TIME_SERIES_TABLES
@@ -180,35 +175,19 @@ KEY_COLUMNS = {
     "bauland": ["kreis_id", "jahr", "merkmal"],
     "bevoelkerungzahlen": ["id"],
 }
-
-# Snapshot-Tabellen ohne (hinreichend) verlaesslichen Business-Key -> Change
-# Detection nur auf Tabellenebene (audit_table_snapshot()), kein zeilengenauer
-# Merge. Aktuell nur gemeinden (s. Kommentar bei KEY_COLUMNS).
 TABLE_LEVEL_SNAPSHOT_TABLES = SNAPSHOT_TABLES - set(KEY_COLUMNS)
 
-# Umlaut -> ASCII-Ersatz, inkl. Grossschreibung. Fuer Spalten OHNE Beschaedigung
-# (project_gemeinden.municipality_name), wo eine echte Transliteration moeglich ist.
-
-# Fuer project_bauland/project_bevoelkerungzahlen: Umlaute + das kaputte
-# Ersatzzeichen aus dem urspruenglichen Encoding-Fehler (U+FFFD) komplett
-# entfernen statt transliterieren (s. Modul-Docstring - eine ae/oe/ue-
-# Transliteration ist dort nicht sinnvoll, weil das kaputte Zeichen ohnehin
-# nicht transliterierbar ist).
 
 def trim(column):
-    """SQL-Ausdruck: Leerzeichen vorne/hinten entfernen."""
+    """Input: Spaltenname. Output: SQL-Ausdruck TRIM(column)."""
     return f"TRIM({column})"
 
 
 def strip_after_comma(column):
-    """SQL-Ausdruck: alles ab dem ersten Komma (inkl. Komma) entfernen,
-    z.B. "Kiel, Kreisstadt" -> "Kiel". Ergebnis wird zusaetzlich getrimmt."""
+    """Input: Spaltenname. Output: SQL-Ausdruck - alles ab dem ersten Komma entfernt, getrimmt."""
     return f"TRIM(SPLIT_PART({column}, ',', 1))"
 
 
-# Umlaut -> ASCII-Ersatz (Kleinschreibung + Grossschreibung). Nur fuer Spalten
-# OHNE Beschaedigung (s. Modul-Docstring), wo eine echte Transliteration
-# sinnvoll ist - project_gemeinden.municipality_name.
 UMLAUT_REPLACEMENTS = [
     ("ä", "ae"), ("ö", "oe"), ("ü", "ue"),
     ("Ä", "Ae"), ("Ö", "Oe"), ("Ü", "Ue"),
@@ -216,8 +195,7 @@ UMLAUT_REPLACEMENTS = [
 
 
 def transliterate_umlauts(column):
-    """SQL-Ausdruck: jeden Umlaut im Wert durch die ASCII-Schreibweise
-    ersetzen (ä->ae, ö->oe, ü->ue, jeweils auch grossgeschrieben)."""
+    """Input: Spaltenname. Output: SQL-Ausdruck, Umlaute -> ASCII (ae/oe/ue)."""
     expr = column
     for umlaut, replacement in UMLAUT_REPLACEMENTS:
         expr = f"REPLACE({expr}, '{umlaut}', '{replacement}')"
@@ -225,25 +203,13 @@ def transliterate_umlauts(column):
 
 
 def compass_to_signed_decimal(column, negative_letter):
-    """SQL-Ausdruck: Koordinate vom Himmelsrichtungs-Format der Klimadaten
-    ("53.84N", "9.55E", Punkt als Dezimaltrennzeichen, Himmelsrichtung als
-    Suffix) in dasselbe Format wie gruppe3_staging_gemeinden.latitude/
-    longitude ueberfuehren (Komma als Dezimaltrennzeichen, kein Buchstabe).
-
-    negative_letter ist der Buchstabe, der eine negative Koordinate bedeutet
-    ('S' fuer latitude, 'W' fuer longitude) - dieser dreht das Vorzeichen um,
-    der jeweils andere (N bzw. O) wird nur entfernt. Ohne diese Vorzeichen-
-    Behandlung wuerde ein reines Entfernen des Buchstabens S/W-Koordinaten
-    verzerren (aus "5.63S" wuerde "5,63" statt korrekt "-5,63")."""
+    """Input: Spaltenname (Format "53.84N"), negative_letter ('S' oder 'W').
+    Output: SQL-Ausdruck, Format "5,63"/"-5,63" (Komma-Dezimal, Vorzeichen statt Buchstabe)."""
     numeric = f"CAST(REGEXP_REPLACE({column}, '[A-Z]', '') AS DOUBLE)"
     signed = f"CASE WHEN {column} LIKE '%{negative_letter}' THEN -{numeric} ELSE {numeric} END"
     return f"REPLACE(CAST({signed} AS STRING), '.', ',')"
 
 
-# gruppe3_staging_bauland.merkmal: bekannte kaputte Werte (Ersatzzeichen
-# U+FFFD, s. Modul-Docstring), fuer die die urspruengliche Schreibweise
-# bekannt ist -> 1:1 auf die korrekte Schreibweise mappen statt die
-# kaputten Zeichen nur zu entfernen.
 BAULAND_MERKMAL_CORRECTIONS = {
     "Ver�u�erungsf�lle von Bauland": "Veraeusserungsfaelle von Bauland",
     "Ver�u�erte Baulandfl�che": "Veraeusserte Baulandflaeche",
@@ -251,13 +217,7 @@ BAULAND_MERKMAL_CORRECTIONS = {
 
 
 def fix_known_values(expr, corrections, else_expr=None):
-    """SQL-Ausdruck: wenn expr exakt einem bekannten kaputten Wert entspricht,
-    die korrekte Schreibweise einsetzen; sonst else_expr (standardmaessig expr).
-
-    WICHTIG: expr muss bereits die Form haben, in der die kaputten Werte in
-    corrections erwartet werden (z.B. inkl. TRIM oder strip_after_comma) -
-    sonst greift der Vergleich nie (s. Bug: kreis-Rohwerte wie "  Luebeck,
-    kreisfreie Stadt" matchen nicht gegen den blossen Ortsnamen "Luebeck")."""
+    """Input: SQL-Ausdruck, {kaputt: korrekt}. Output: CASE-Ausdruck, ersetzt bekannte Werte."""
     if else_expr is None:
         else_expr = expr
     cases = " ".join(
@@ -266,50 +226,28 @@ def fix_known_values(expr, corrections, else_expr=None):
     return f"CASE {cases} ELSE {else_expr} END"
 
 
-# kreis (bauland + bevoelkerungzahlen): bekannte kaputte Werte (Ersatzzeichen
-# U+FFFD, s. Modul-Docstring) -> 1:1 auf die korrekte Schreibweise mappen
-# statt die kaputten Zeichen nur zu entfernen. Beide Staging-Tabellen
-# referenzieren dieselben deutschen Kreise/kreisfreien Staedte, daher ein
-# gemeinsames Dict.
-#
-# Die korrekte Schreibweise wird, wo moeglich, automatisch aus drei
-# Referenzlisten in src/utils/ ermittelt statt von Hand eingetragen (s.
-# _resolve_kreis_correction): german_cities.txt (Staedte/Orte, OSM-Liste),
-# german_regions.txt (Landkreise + kreisfreie Staedte) und
-# german_states.txt (die 16 Bundeslaender). Das Ersatzzeichen steht fuer
-# genau ein verlorenes Zeichen (Umlaut oder ß); der (Teil-)Name wird in
-# diesen Listen gesucht und der gefundene echte Name danach zu ASCII
-# transliteriert (ä/ö/ü/ß -> ae/oe/ue/ss).
 _UMLAUT_ASCII = [
     ("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"),
     ("Ä", "Ae"), ("Ö", "Oe"), ("Ü", "Ue"),
 ]
 
-# Zeichen, die als Wortgrenze gelten, wenn ein zusammengesetzter Kreisname
-# (z.B. "Rendsburg-Eckernfoerde") wortweise durchsucht wird, weil er als
-# Ganzes keinem Referenzlisten-Eintrag entspricht.
 _WORD_SPLIT_PATTERN = re.compile(r"([^A-Za-zÀ-ÖØ-öø-ÿ�]+)")
 
 
 def _transliterate_umlauts_py(name):
+    """Input: String. Output: String mit Umlauten -> ASCII."""
     for umlaut, replacement in _UMLAUT_ASCII:
         name = name.replace(umlaut, replacement)
     return name
 
 
 def _load_name_list(filename):
+    """Input: Dateiname in src/utils/. Output: Liste von Namen (eine Zeile je Name)."""
     path = os.path.join(os.path.dirname(__file__), "utils", filename)
     with open(path, encoding="utf-8") as f:
         return [line.strip().strip('"') for line in f if line.strip()]
 
 
-# Gemeinsamer Namenspool aus Staedten, Kreisen/kreisfreien Staedten und
-# Bundeslaendern - deckt zusammen alle Ebenen ab, auf denen die kaputten
-# kreis-Werte tatsaechlich benannt sind (Stadt, Landkreis oder Bundesland).
-# dict.fromkeys() statt set() entfernt Duplikate (z.B. kreisfreie Staedte,
-# die sowohl in german_cities.txt als auch in german_regions.txt stehen),
-# ohne die Reihenfolge zu veraendern - sonst wuerde z.B. "Luebeck" durch den
-# doppelten Eintrag faelschlich als mehrdeutiger Treffer gelten.
 _REFERENCE_NAMES = list(dict.fromkeys(
     _load_name_list("german_cities.txt")
     + _load_name_list("german_regions.txt")
@@ -318,14 +256,8 @@ _REFERENCE_NAMES = list(dict.fromkeys(
 
 
 def _find_reference_match(pattern_str):
-    """Sucht im Namenspool (Staedte + Kreise + Bundeslaender) genau einen
-    Treffer fuer ein Regex-Pattern (mit '.' anstelle des Ersatzzeichens
-    U+FFFD). Bei mehreren Treffern wird der mit einem echten deutschen
-    Sonderzeichen an der Ersatzstelle bevorzugt (z.B. matcht "M.nster"
-    sowohl "Munster" als auch "Muenster" - da das Ersatzzeichen fuer einen
-    verlorenen Umlaut steht, ist der Treffer mit Umlaut hier die richtige
-    Wahl; bleibt es danach weiterhin mehrdeutig, gilt der Name als nicht
-    gefunden)."""
+    """Input: Regex-Pattern ('.' statt Ersatzzeichen U+FFFD). Output: eindeutiger
+    Treffer im Namenspool, oder None (bei Mehrdeutigkeit: Treffer mit Umlaut bevorzugt)."""
     pattern = re.compile("^" + pattern_str + "$")
     matches = [name for name in _REFERENCE_NAMES if pattern.match(name)]
     if len(matches) > 1:
@@ -334,16 +266,8 @@ def _find_reference_match(pattern_str):
 
 
 def _resolve_kreis_correction(bad_name):
-    """Ermittelt fuer einen kaputten Kreisnamen (mit Ersatzzeichen U+FFFD
-    fuer verlorene Umlaute/ß) die korrekte Schreibweise ueber die
-    Referenzlisten (Staedte/Kreise/Bundeslaender) und transliteriert sie zu
-    ASCII. Erst wird der ganze Name gesucht (z.B. "Rotenburg (Wuemme)"),
-    dann - falls kein Treffer - Wort fuer Wort (z.B. bei zusammengesetzten
-    Kreisnamen wie "Rendsburg-Eckernfoerde", wo nur "Eckernfoerde" allein
-    als eigener Eintrag vorkommt). Gibt None zurueck, wenn sich keine
-    Entsprechung finden laesst (z.B. Namen von Berliner Bezirken oder
-    laengst aufgeloesten Landkreisen, die in keiner der drei Listen mehr
-    auftauchen)."""
+    """Input: kaputter Kreisname (mit U+FFFD). Output: korrigierter, ASCII-transliterierter
+    Name aus den Referenzlisten (erst ganzer Name, dann wortweise), oder None."""
     whole_pattern = re.escape(bad_name).replace(re.escape("�"), ".")
     whole_match = _find_reference_match(whole_pattern)
     if whole_match is not None:
@@ -365,32 +289,23 @@ def _resolve_kreis_correction(bad_name):
     return _transliterate_umlauts_py("".join(tokens))
 
 
-# Kaputte Namen, fuer die keine der drei Referenzlisten einen Eintrag hat -
-# entweder Berliner Bezirke (Berlin steht in german_regions.txt nur als
-# Ganzes, ohne Bezirksebene) oder laengst im Zuge von Kreisgebietsreformen
-# aufgeloeste Landkreise (Sachsen 2008, Sachsen-Anhalt 2007,
-# Mecklenburg-Vorpommern 2011) - hier bleibt die korrekte Schreibweise von
-# Hand gepflegt.
+# Manuell gepflegt: Berliner Bezirke + laengst aufgeloeste Landkreise, die in
+# keiner Referenzliste mehr vorkommen.
 MANUAL_KREIS_CORRECTIONS = {
     "St�dteregion Aachen": "Staedteregion Aachen",
     "Berlin-Treptow-K�penick": "Berlin-Treptow-Koepenick",
     "Berlin-Neuk�lln": "Berlin-Neukoelln",
-    "Wei�eritzkreis": "Weisseritzkreis",  # aufgeloest 2008 (Sachsen)
-    "S�chsische Schweiz": "Saechsische Schweiz",  # aufgeloest 2008 (Sachsen)
-    "B�rdekreis": "Boerdekreis",  # aufgeloest 2007 (Sachsen-Anhalt)
-    "R�gen": "Ruegen",  # aufgeloest 2011 (Mecklenburg-Vorpommern)
-    "Landkreis M�ritz": "Landkreis Mueritz",  # aufgeloest 2011 (Mecklenburg-Vorpommern)
+    "Wei�eritzkreis": "Weisseritzkreis",
+    "S�chsische Schweiz": "Saechsische Schweiz",
+    "B�rdekreis": "Boerdekreis",
+    "R�gen": "Ruegen",
+    "Landkreis M�ritz": "Landkreis Mueritz",
 }
 
 
 def _discover_bad_kreis_values(cur):
-    """Ermittelt zur Laufzeit die tatsaechlich in gruppe3_staging_bauland UND
-    gruppe3_staging_bevoelkerungzahlen vorkommenden kreis-Werte mit dem
-    Ersatzzeichen U+FFFD - statt eine feste Liste bereits bekannter kaputter
-    Werte im Code zu pflegen, die bei neuen Staging-Laeufen veralten koennte.
-    TRIM + SPLIT_PART(..., ',', 1) entspricht exakt strip_after_comma(): nur
-    so liegen die entdeckten Werte in derselben Form vor, in der
-    fix_known_values() sie spaeter vergleicht (s. dortige Warnung)."""
+    """Input: Cursor. Output: sortierte Liste kaputter kreis-Werte (mit U+FFFD),
+    live aus bauland/bevoelkerungzahlen gelesen."""
     bad_values = set()
     for table in (STAGING_TABLES["bauland"], STAGING_TABLES["bevoelkerungzahlen"]):
         cur.execute(
@@ -402,6 +317,8 @@ def _discover_bad_kreis_values(cur):
 
 
 def _build_kreis_corrections(cur):
+    """Input: Cursor. Output: {kaputt: korrekt} - MANUAL_KREIS_CORRECTIONS plus
+    automatisch aufgeloeste Werte; RuntimeError, falls ein Wert unaufloesbar ist."""
     corrections = dict(MANUAL_KREIS_CORRECTIONS)
     for bad_name in _discover_bad_kreis_values(cur):
         if bad_name in corrections:
@@ -417,12 +334,6 @@ def _build_kreis_corrections(cur):
     return corrections
 
 
-# gruppe3_staging_klimadaten.city: manche deutschen Staedte sind unter ihrem
-# englischen Namen erfasst statt unter dem deutschen (z.B. "Munich" statt
-# "München") - 1:1 auf die (bereits ASCII-transliterierte) deutsche
-# Schreibweise gemappt, damit der Name zu
-# gruppe3_staging_gemeinden.municipality_name passt (s. Modul-Docstring,
-# Namens-Join in pipeline_audit_to_target.py).
 CITY_NAME_CORRECTIONS = {
     "Munich": "Muenchen",
     "Cologne": "Koeln",
@@ -433,12 +344,9 @@ CITY_NAME_CORRECTIONS = {
 }
 
 
-# Je Thema: SQL-Ausdruck je zu bereinigender Spalte + optionaler WHERE-Filter.
-# Wird erst zur Laufzeit gebaut (build_audit_rules(cur), s.u.), weil
-# KREIS_CORRECTIONS von den tatsaechlich in den Staging-Tabellen vorkommenden
-# kaputten Werten abhaengt (s. _discover_bad_kreis_values) - dafuer wird
-# bereits ein offener Cursor gebraucht, den es auf Modulebene noch nicht gibt.
 def build_audit_rules(cur):
+    """Input: Cursor. Output: {tabelle: {"columns": {...}, "where": ...}} -
+    Bereinigungsregeln je Tabelle/Spalte."""
     kreis_corrections = _build_kreis_corrections(cur)
     return {
         "bauland": {
@@ -473,11 +381,13 @@ def build_audit_rules(cur):
 
 
 def get_columns(cur, table_name):
+    """Input: table_name. Output: Liste der Spaltennamen."""
     cur.execute(f"DESCRIBE {table_name}")
     return [row[0] for row in cur.fetchall()]
 
 
 def build_select_list(columns, column_rules):
+    """Input: Spaltenliste, {spalte: SQL-Ausdruck}. Output: SELECT-Liste als String."""
     return ", ".join(
         f"{column_rules[col]} AS {col}" if col in column_rules else col
         for col in columns
@@ -485,14 +395,8 @@ def build_select_list(columns, column_rules):
 
 
 def audit_table_incremental(cur, name, staging_table, audit_table_name, select_list, base_where):
-    """
-    Echtes Incremental Load per Wasserzeichen fuer Zeitreihen-Tabellen
-    (aktuell nur klimadaten): bereinigt beim ersten Lauf einmalig den
-    kompletten Bestand (INSERT OVERWRITE), danach nur noch den Bereich
-    dt > eigenem Audit-Wasserzeichen (INSERT INTO, ANHAENGEN statt
-    ueberschreiben). Dieselben AUDIT_RULES/Bereinigungsausdruecke wie bisher,
-    nur der WHERE-Filter kommt zusaetzlich dazu.
-    """
+    """Input: staging_table, select_list, base_where (nur klimadaten). Output:
+    (row_count, changed) - Full Load beim ersten Lauf, danach dt > Wasserzeichen (APPEND)."""
     state = get_latest_state(cur, "audit", name)
     watermark = state["watermark_value"] if state else None
 
@@ -507,11 +411,6 @@ def audit_table_incremental(cur, name, staging_table, audit_table_name, select_l
         )
         changed = True
     else:
-        # Dieselben Filter wie der eigentliche INSERT (inkl. base_where, z.B.
-        # country = 'Germany') - sonst wuerde "changed" auch bei neuen,
-        # aber fachlich irrelevanten Zeilen (z.B. neue Messtage fuer
-        # Nicht-Deutschland-Staedte) True liefern und einen nutzlosen
-        # Leer-INSERT ausloesen.
         cur.execute(f"SELECT COUNT(*) FROM {staging_table}{where_clause}")
         changed = cur.fetchone()[0] > 0
         if changed:
@@ -519,15 +418,6 @@ def audit_table_incremental(cur, name, staging_table, audit_table_name, select_l
                 f"INSERT INTO {audit_table_name} SELECT {select_list} FROM {staging_table}{where_clause}"
             )
 
-    # Wasserzeichen NUR bei tatsaechlicher Verarbeitung fortschreiben. Hier
-    # doppelt wichtig: should_skip_target_build() in pipeline_audit_to_target.py
-    # vergleicht das recorded_at der Audit-Eintraege mit dem letzten
-    # Ziel-Build - ein Eintrag pro unveraendertem Lauf wuerde den teuren
-    # Spark-Rebuild jedes Mal faelschlich ausloesen, der Skip wuerde nie
-    # greifen. Bei changed=False bleibt der letzte Eintrag der gueltige
-    # Stand; neue, aber fachlich irrelevante Staging-Zeilen (z.B. neue
-    # Messtage ausserhalb Deutschlands) werden beim naechsten Lauf einfach
-    # erneut guenstig per COUNT geprueft.
     if changed:
         cur.execute(f"SELECT MAX({TIME_SERIES_WATERMARK_COLUMN}) FROM {staging_table}")
         new_watermark = cur.fetchone()[0]
@@ -685,6 +575,8 @@ def audit_table_snapshot(cur, name, staging_table, audit_table_name, select_list
 
 
 def audit_table(cur, name, audit_rules):
+    """Input: name, audit_rules. Output: (row_count, changed) - waehlt Strategie
+    (Wasserzeichen/Keyed-Merge/Snapshot) und legt Audit-Tabelle ggf. an."""
     staging_table = STAGING_TABLES[name]
     audit_table_name = AUDIT_TABLES[name]
     rule = audit_rules[name]
