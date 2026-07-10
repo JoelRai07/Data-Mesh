@@ -1,10 +1,17 @@
-# TODO (Stand: 06.07.2026)
+# TODO (Stand: 10.07.2026)
 
 Nur offene Aufgaben. Entscheidungen & Begründungen: [docs/entscheidungen.md](docs/entscheidungen.md) ·
 Benutzung/Überblick: [README.md](README.md) · Konsumenten-Sicht: [docs/data_contract.yaml](docs/data_contract.yaml)
 
 ## Vor der Abgabe (Pflicht)
 
+- [ ] **Stufe 3 nach dem Shadow-Swap-Umbau bestätigen** (braucht Rechner mit
+      JDK 17 + `ImpalaJDBC42.jar`): einmal `FORCE_TARGET_BUILD=1` +
+      `src/pipeline_audit_to_target.py` laufen lassen — der neue atomare
+      Publish (`overwrite_table` via `*_wap_incoming`-Shadow) besteht aus
+      einzeln live getesteten Statements, ist im Ganzen aber noch nicht
+      gelaufen. Stufen 1+2, Migration und Contract-Gate (32/32) sind am
+      10.07. live verifiziert (s. README/ADR.md).
 - [ ] **End-to-End-Abnahmetest:** `src/utils/reset_database.py` → `src/run_pipeline.py` →
       zweiter Lauf direkt danach muss die unveränderten Stufen überspringen; am Ende muss
       `src/contract_check.py` mit 0 Fehlern bestehen.
@@ -45,11 +52,21 @@ Benutzung/Überblick: [README.md](README.md) · Konsumenten-Sicht: [docs/data_co
       kaufwert-BIGINT-Schaden) → Datenmodell → WAP + Incremental Loading →
       Data Contract + technisches Gate → ehrliche Grenzen.
 - [ ] Fragerunde üben: negative Scores (z-Score, gewollt), warum Impala-SQL in
-      Stufe 1+2, warum kein UPDATE/MERGE in Impala (append-only State), NULL-Semantik,
-      warum Data Contract CLI als Abgabe-Contract plus eigenes Pipeline-Gate.
+      Stufe 1+2, Parquet (Dateiformat) vs. Iceberg (Tabellenformat) und was
+      Iceberg konkret bringt (MERGE/DELETE, atomare Snapshots, Time Travel,
+      hidden partitioning), NULL-Semantik, warum Data Contract CLI als
+      Abgabe-Contract plus eigenes Pipeline-Gate.
 
 ## Erledigt (Auszug)
 
+- [x] **Komplette Pipeline auf Apache Iceberg + Incremental bestätigt (10.07., Duc):**
+      alle 20 Tabellen migriert (`src/utils/migrate_to_iceberg.py`, Zeilenzahlen
+      verifiziert), zeilengenauer Merge jetzt zustandslos (Iceberg `DELETE`+`MERGE INTO`
+      mit `<=>`-Vergleich, Zeilen-Hash-Historie entfällt), ETL-State als Upsert,
+      atomarer Publish per Shadow-Swap, Klimadaten nach Jahr partitioniert;
+      Skip- und Änderungspfad live gegen die echte DB getestet (s. `ADR.md` Iteration 4).
+      Der kurzzeitige Full-Load-Rückbau vom 10.07. ist revidiert
+      (Branch `backup/full-load-rueckbau-2026-07-10`).
 - [x] Scheduler finalisiert: täglicher Lauf um 00:00 Uhr und Aufruf von `run_pipeline.main()`.
 - [x] Skip-Check-Bug gefixt: `record_state` wird nur bei tatsächlicher Änderung geschrieben.
 - [x] `src/utils/ImpalaJDBC42.jar` aus dem Git-Index entfernt; Datei bleibt lokal per `.gitignore`.

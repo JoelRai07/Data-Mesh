@@ -1,12 +1,18 @@
-# ADR: Apache Iceberg für den zeilengenauen Merge in Stufe 2 (Audit)
+# ADR: Apache Iceberg — vom zeilengenauen Merge in Stufe 2 zur kompletten Iceberg-Pipeline
 
-**Status:** umgesetzt, end-to-end live verifiziert (07.07.2026). Eine zweite
-Iteration hatte die Hash-Historie je Zeile testweise entfernt (s. „Iteration
-2" unten) - das wurde danach wieder rueckgaengig gemacht, weil
-`gruppe3_etl_row_state`/`gruppe3_etl_changed_keys_tmp` vom Incremental
-Scheduler gebraucht werden (s. „Iteration 3").
-**Betrifft:** [src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py) — `audit_table_keyed_snapshot()`,
-`ensure_iceberg_audit_table()`, Tabellen `gruppe3_audit_bauland` und `gruppe3_audit_bevoelkerungzahlen`.
+**Status:** umgesetzt, end-to-end live verifiziert. Aktueller Stand ist
+**Iteration 4 (10.07.2026)**: ALLE Tabellen aller Schichten (Staging, Audit,
+Star-Schema, ETL-State) laufen als Iceberg; der zeilengenaue Merge ist
+zustandslos (die Iceberg-Audit-Tabelle selbst ist der Vergleichsstand), die
+Zeilen-Hash-Historie (`gruppe3_etl_row_state`/`gruppe3_etl_changed_keys_tmp`)
+ist endgueltig entfallen — die Begruendung von Iteration 3, ein „Incremental
+Scheduler" brauche sie, hat sich beim Nachpruefen als gegenstandslos
+herausgestellt (kein Code ausserhalb von Stufe 2 hat diese Tabellen je
+gelesen; per Grep und Tabellennamen-Suche verifiziert). Die Iterationen 1-3
+unten sind als Entwicklungs-Historie erhalten.
+**Betrifft:** alle drei Pipeline-Stufen + `create_datamodel.py` + `etl_state.py`;
+urspruenglich nur [src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py) — `audit_table_keyed_snapshot()`,
+Tabellen `gruppe3_audit_bauland` und `gruppe3_audit_bevoelkerungzahlen`.
 Am Rande mitgefixt: [src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py) setzte `JAVA_HOME`
 beim Direktaufruf nie auf JDK 17 (s. Verifikations-Abschnitt) — unabhängiger Bug, der bei der End-to-End-Prüfung dieser ADR auffiel.
 **Ersetzt:** den Rename-Swap-Teil von ADR-8 in [docs/entscheidungen.md](docs/entscheidungen.md) (dort entsprechend aktualisiert)
@@ -386,3 +392,118 @@ State zugreift (hier: der Incremental Scheduler auf
 `gruppe3_etl_row_state`). Ein Grep auf Funktionsnamen im eigenen Repo (wie in
 Iteration 2 gemacht) findet keine Abhaengigkeiten, die nur ueber den
 Tabellennamen selbst laufen oder ausserhalb des durchsuchten Codes liegen.
+
+## Iteration 4: Komplette Pipeline auf Iceberg, Merge zustandslos (10.07.2026)
+
+**Vorgeschichte:** Am Vormittag des 10.07. war die gesamte Pipeline in einem
+(nie committeten) Zwischenstand auf reines Full Load zurueckgebaut worden
+(Begruendung damals: Incremental Loading sei keine Pflichtanforderung).
+Diese Entscheidung wurde noch am selben Tag revidiert - das Incremental-
+Loader-Pattern ist ausdruecklich gewuenscht und wird jetzt konsequent mit
+Apache Iceberg ueber die GANZE Pipeline umgesetzt. Der Full-Load-Zwischenstand
+ist auf dem Branch `backup/full-load-rueckbau-2026-07-10` gesichert.
+
+### Was sich gegenueber Iteration 3 aendert
+
+1. **ALLE Tabellen sind Iceberg (format-version 2)** - nicht mehr nur die
+   zwei Merge-Audit-Tabellen:
+   - Staging (Stufe 1): atomare INSERT-OVERWRITE-Snapshots beim bedingten
+     Full Refresh; `gruppe3_staging_klimadaten` per Iceberg-Transform
+     `PARTITIONED BY SPEC (TRUNCATE(4, dt))` nach Jahr partitioniert
+     (hidden partitioning - der Wasserzeichen-Filter `dt > '...'` wird zum
+     Partition-Prune statt zum 8,6-Mio.-Zeilen-Scan).
+   - Audit (Stufe 2): `gruppe3_audit_gemeinden`/`_klimadaten` jetzt ebenfalls
+     Iceberg (atomarer Full Refresh bzw. partitionierter Append).
+   - Star-Schema (Stufe 3): alle 9 `dim_*`/`fact_*`-Tabellen Iceberg; der
+     Publish laeuft als ATOMARER Shadow-Swap (s. Punkt 3).
+   - `gruppe3_etl_state`: Iceberg mit echtem UPSERT (s. Punkt 4).
+
+2. **Zeilengenauer Merge jetzt zustandslos (Iteration-2-Idee, korrigiert
+   wieder eingefuehrt):** `audit_table_keyed_snapshot()` vergleicht direkt
+   in SQL - `MERGE INTO ... WHEN MATCHED AND NOT (t.col <=> src.col AND ...)
+   THEN UPDATE` (NULL-sicherer Vergleich), geloeschte Keys per
+   `DELETE t FROM audit t WHERE key NOT IN (SELECT key FROM staging)`.
+   Die Iceberg-Audit-Tabelle selbst ist der Vergleichsstand. Der guenstige
+   Vor-Check bleibt die `content_signature()`-Tabellen-Pruefsumme. Die
+   Zeilen-Hash-Historie ist damit endgueltig geloescht: die Iteration-3-
+   Begruendung (ein "Incremental Scheduler" als zweiter Konsument) war beim
+   Nachpruefen nicht haltbar - `scheduler.py` ruft nur `run_pipeline.main()`
+   auf und hat `gruppe3_etl_row_state` nie gelesen (Grep ueber Funktions-
+   UND Tabellennamen, zusaetzlich Live-Blick in die Datenbank).
+
+   **Neu gegenueber Iteration 2 - Duplikat-Keys:** `default.project_bauland`
+   enthaelt 40 komplett leere Import-Zeilen (identischer Business-Key ''),
+   `project_bevoelkerungzahlen` 2 Leerzeilen mit id='' (live verifiziert;
+   sonst sind beide Keys eindeutig). Ein MERGE mit mehreren Quellzeilen je
+   Ziel-Key bricht in Impala hart ab ("Duplicate row found ...", live
+   reproduziert) - die MERGE-Quelle wird deshalb per GROUP BY (bereinigte
+   Key-Ausdruecke) + MIN() je Nicht-Key-Spalte deterministisch auf eine
+   Zeile je Key verdichtet. Die naheliegendere ROW_NUMBER()-Variante
+   scheitert an einem Impala-Planner-Fehler ("Illegal reference to
+   non-materialized tuple", live reproduziert, in beiden Nesting-Formen).
+
+3. **Atomarer Publish (WAP zu Ende gedacht):** `overwrite_table()` in Stufe 3
+   schrieb bisher TRUNCATE + INSERT-Batches DIREKT in die sichtbaren
+   `dim_*`/`fact_*`-Tabellen - ein Konsument konnte dazwischen eine leere/
+   halbe Tabelle lesen. Jetzt: Batches in eine Shadow-Tabelle
+   (`<ziel>_wap_incoming`), dann EIN `INSERT OVERWRITE ziel SELECT * FROM
+   shadow` = ein einzelner Iceberg-Snapshot-Commit. Konsumenten sehen zu
+   jedem Zeitpunkt den kompletten alten ODER den kompletten neuen Stand;
+   der alte bleibt per Time Travel abfragbar.
+
+4. **ETL-State als Upsert statt Append-Only:** Die Append-Only-Konstruktion
+   existierte NUR, weil Parquet kein UPDATE/MERGE kann. `record_state()`
+   macht jetzt ein `MERGE INTO`-UPSERT (genau eine Zeile je
+   stage+table_name), `get_latest_state()` ist ein simpler SELECT ohne
+   "juengste Zeile suchen"-Logik. Die Verlaufs-Historie liegt in den
+   Iceberg-Snapshots (`DESCRIBE HISTORY gruppe3_etl_state` / Time Travel) -
+   Historie als Feature des Tabellenformats statt als App-Logik.
+
+5. **Migration verallgemeinert:** `src/utils/migrate_to_iceberg.py` (ersetzt
+   `migrate_audit_tables_to_iceberg.py`) migriert alle Schichten verlustfrei
+   (CTAS + Zeilenzahl-Verifikation VOR dem Rename-Swap), verdichtet die
+   Append-Only-State-Historie auf den juengsten Eintrag je Schluessel und
+   loescht die beiden obsoleten Zeilen-Hash-Tabellen.
+
+### Verifikation Iteration 4 (live gegen den echten Cluster, Impala 4.5.0)
+
+- Feature-Probe auf Wegwerf-Tabellen: `MERGE ... WHEN MATCHED AND`,
+  `WHEN NOT MATCHED BY SOURCE THEN DELETE`, `UPDATE`, `DELETE` (mit/ohne
+  Alias), `INSERT OVERWRITE` (auch auf partitionierte Iceberg-Tabellen),
+  `TRUNCATE`, `DESCRIBE HISTORY`, Time Travel, `PARTITIONED BY SPEC
+  (TRUNCATE(4, dt))` auf STRING-Spalten, CTAS aus Parquet-Quellen - alles
+  funktioniert. Negativ-Befunde (fuehrten zum finalen Design): MERGE-Abbruch
+  bei Duplikat-Quellzeilen, ROW_NUMBER()-Planner-Fehler im MERGE-USING,
+  `DELETE ... LEFT ANTI JOIN`-AnalysisException ("For deleting every row,
+  please use TRUNCATE") -> NOT-IN-Subquery (CONCAT_WS-Keys sind nie NULL,
+  daher NULL-sicher).
+- Der komplette GROUP-BY-Dedupe-MERGE-Pfad end-to-end auf einer Testtabelle
+  mit Duplikat-Keys und NULL-Spalten: initialer Load, Idempotenz-Lauf,
+  Update der Duplikat-Zeilen (aktualisiert alle betroffenen Ziel-Zeilen,
+  kein Abbruch), Delete-Erkennung - Ergebnis exakt wie erwartet.
+- Einmalige Migration ALLER 20 Bestandstabellen ausgefuehrt: Zeilenzahlen
+  1:1 verifiziert (u.a. gruppe3_staging_klimadaten mit 8.599.212 Zeilen),
+  `gruppe3_etl_state` auf 9 aktuelle Eintraege verdichtet, obsolete
+  Hash-Tabellen geloescht.
+- Stufe 1 + Stufe 2 danach komplett gelaufen: alle vier Quellen korrekt als
+  "unveraendert - Lauf uebersprungen" erkannt.
+- Aenderungspfad erzwungen (State-Pruefsummen invalidiert): DELETE+MERGE
+  (bauland, bevoelkerungzahlen) und Full Refresh (gemeinden) gegen die
+  echten Daten gelaufen - `content_signature()` und Zeilenzahlen vor/nach
+  IDENTISCH, der direkt folgende Lauf skippt wieder ueberall.
+- `contract_check.py` gegen das (migrierte) Datenprodukt: 32/32 Checks OK.
+- **Noch offen:** Stufe 3 (Spark) konnte auf dem Umbau-Rechner nicht laufen
+  (kein `ImpalaJDBC42.jar`/JDK 17 lokal). Der Spark-JDBC-LESEpfad gegen
+  Iceberg-Audit-Tabellen ist seit Iteration 1 verifiziert; der neue
+  Shadow-Swap-SCHREIBpfad nutzt dieselben, einzeln live getesteten
+  Statements (CTAS WHERE 1=0, TRUNCATE, INSERT INTO ... VALUES, INSERT
+  OVERWRITE ... SELECT), muss aber einmal im Ganzen per
+  `FORCE_TARGET_BUILD=1` bestaetigt werden (s. TODO/README).
+
+### Lehre aus Iteration 3 -> 4
+
+Die Iteration-3-Rueckabwicklung beruhte auf einer unbelegten Behauptung
+("wird vom Incremental Scheduler gebraucht"), die nie gegen den Code
+verifiziert wurde. Konsequenz fuer kuenftige Entscheidungen: WER genau der
+Konsument ist, gehoert mit Dateiname/Zeile in die ADR - eine Abhaengigkeit,
+die sich nicht benennen laesst, existiert mit hoher Wahrscheinlichkeit nicht.

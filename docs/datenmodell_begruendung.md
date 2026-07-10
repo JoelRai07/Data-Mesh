@@ -104,9 +104,14 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
    erfordern. Wir berechnen sie daher einmal in der Pipeline vor und speichern
    sie als eigene, dashboard-fertige Faktentabelle auf Kreis × Jahr-Ebene.
 
-8. **Speicherung als Parquet.**
-   Spaltenorientiertes Format → ideal für OLAP (es werden nur die benötigten Spalten
-   gelesen, "data skipping"). (vgl. Vorlesung 1, Folien 14–24)
+8. **Speicherung als Apache Iceberg (Datendateien: Parquet).**
+   Spaltenorientiertes Parquet → ideal für OLAP (es werden nur die benötigten
+   Spalten gelesen, "data skipping"; vgl. Vorlesung 1, Folien 14–24). Apache
+   Iceberg legt darüber eine Snapshot-/Metadaten-Schicht: das Datenprodukt
+   wird beim Publish **atomar** ersetzt (Konsumenten sehen nie einen halb
+   geschriebenen Stand), frühere Stände bleiben per Time Travel
+   (`FOR SYSTEM_TIME AS OF`) abfragbar, und die Pipeline kann zeilengenaues
+   `MERGE INTO`/`DELETE` nutzen (s. `entscheidungen.md` ADR-8 und `ADR.md`).
 
 9. **Bewusste Abgrenzung (Scope & Datenqualität).**
    - `project_gemeinden` hat kaputtes CSV-Parsing (Kommas in Gemeindenamen
@@ -126,7 +131,9 @@ dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.
 Alle DDLs nutzen `CREATE TABLE IF NOT EXISTS`. Die Befüllung ist inkrementell
 (s. `src/etl_state.py` und die Modul-Docstrings der drei Pipeline-Stufen):
 Zeitreihen-Tabellen (`klimadaten`) werden per Wasserzeichen nur um neue Zeilen
-ergänzt (`INSERT INTO`), Snapshot-Tabellen (`bauland`, `bevoelkerungzahlen`,
-`gemeinden`) und das Star-Schema werden nur bei tatsächlicher Änderung per
-`INSERT OVERWRITE` komplett neu geschrieben. In beiden Fällen erzeugt
-mehrfaches Ausführen keine Duplikate.
+ergänzt (`INSERT INTO`, Iceberg-partitioniert nach Jahr), `bauland`/
+`bevoelkerungzahlen` werden zeilengenau per Iceberg `DELETE`+`MERGE INTO`
+nachgeführt, `gemeinden` und das Star-Schema werden nur bei tatsächlicher
+Änderung per atomarem `INSERT OVERWRITE`-Snapshot komplett neu geschrieben.
+In allen Fällen erzeugt mehrfaches Ausführen keine Duplikate; unveränderte
+Quellen werden übersprungen.

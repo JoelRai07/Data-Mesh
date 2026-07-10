@@ -1,5 +1,6 @@
 """
-Persistente ETL-Metadaten-/State-Tabelle fuer das Incremental-Loader-Pattern.
+Persistente ETL-Metadaten-/State-Tabelle fuer das Incremental-Loader-Pattern
++ gemeinsame Apache-Iceberg-Helfer fuer alle drei Pipeline-Stufen.
 
 Wird von allen drei Pipeline-Stufen genutzt (pipeline_default_to_staging.py,
 pipeline_staging_to_audit.py, pipeline_audit_to_target.py), um pro
@@ -8,30 +9,33 @@ zu merken - entweder als Wasserzeichen (Zeitreihen-Tabellen) oder als
 Inhalts-Pruefsumme (Snapshot-Tabellen ohne verlaesslichen
 Aenderungsindikator, s. Doku in den beiden erstgenannten Modulen).
 
-Zusaetzlich (weiter unten): ROW_STATE_TABLE/CHANGED_KEYS_TABLE fuer echtes
-ZEILENGENAUES Incremental Merge bei Snapshot-Tabellen MIT Business-Key
-(bauland, bevoelkerungzahlen) - s. audit_table_keyed_snapshot in
-pipeline_staging_to_audit.py fuer die Verwendung. Diese Zeilenhistorie wird
-bewusst eigenstaendig gepflegt (nicht nur aus der Iceberg-Audit-Tabelle
-abgeleitet), weil sie auch ausserhalb von audit_table_keyed_snapshot()
-gebraucht wird, u.a. fuer den Incremental Scheduler.
+WARUM UPSERT (MERGE INTO) STATT DER FRUEHEREN APPEND-ONLY-HISTORIE?
+  Die State-Tabelle war frueher append-only (jeder Lauf haengte eine neue
+  Zeile an, "aktuell" war die juengste recorded_at-Zeile je Schluessel),
+  weil Parquet-Tabellen auf Impala/HDFS kein UPDATE/MERGE kennen. Seit die
+  komplette Pipeline auf Apache Iceberg laeuft (s. ADR.md), gilt das nicht
+  mehr: gruppe3_etl_state ist selbst eine Iceberg-Tabelle, record_state()
+  macht ein echtes UPSERT per MERGE INTO, und get_latest_state() ist ein
+  einfacher SELECT auf genau eine Zeile je (stage, table_name) - ohne
+  "juengste Zeile suchen"-Logik in Python. Die Historie geht dabei NICHT
+  verloren, sie wandert nur die Ebene runter: jeder MERGE ist ein eigener
+  Iceberg-Snapshot, d.h. "wie sah der State vor 3 Laeufen aus" beantwortet
+  DESCRIBE HISTORY gruppe3_etl_state bzw. Time Travel
+  (SELECT ... FOR SYSTEM_TIME AS OF ...), ohne dass die Tabelle selbst
+  unbegrenzt waechst.
 
-WARUM EINE APPEND-ONLY-TABELLE STATT UPDATE/UPSERT DES STATE-EINTRAGS?
-  Alle Tabellen dieses Projekts liegen STORED AS PARQUET auf normalem
-  Impala/HDFS-Speicher, nicht auf Kudu. Damit kennt Impala kein UPDATE,
-  DELETE oder MERGE auf einzelnen Zeilen (nur INSERT, INSERT OVERWRITE,
-  TRUNCATE) - ein klassisches "ueberschreibe den Watermark-Wert" ist also
-  technisch nicht moeglich, ohne die gesamte Tabelle zu ersetzen. Diese
-  State-Tabelle ist deshalb bewusst APPEND-ONLY: jeder Lauf haengt per
-  INSERT INTO einen neuen Eintrag an, der "aktuelle" Stand einer
-  (stage, table_name)-Kombination ist immer die Zeile mit dem juengsten
-  recorded_at (s. get_latest_state). Das ist ein Standardmuster fuer
-  ETL-Metadaten auf Append-Only-Warehouses ohne Zeilen-Update und kommt
-  ohne Kudu/ACID-Tabellen aus, deren Verfuegbarkeit auf dem Kurs-Cluster
-  nicht vorausgesetzt werden kann.
+Die frueher zusaetzlich gepflegte Zeilen-Hash-Historie
+(gruppe3_etl_row_state/gruppe3_etl_changed_keys_tmp) ist komplett
+entfallen: seit die Audit-Tabellen Iceberg sind, IST die Audit-Tabelle
+selbst der Vergleichsstand fuer das zeilengenaue Merge - der NULL-sichere
+Spaltenvergleich passiert direkt im MERGE INTO (s.
+audit_table_keyed_snapshot in pipeline_staging_to_audit.py und ADR.md,
+Iteration 4).
 """
 
 STATE_TABLE = "gruppe3_etl_state"
+
+ICEBERG_TBLPROPERTIES = "TBLPROPERTIES('format-version'='2')"
 
 CREATE_STATE_TABLE = f"""
 CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
@@ -42,27 +46,96 @@ CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
     row_count       BIGINT COMMENT 'Zeilenzahl zum Aufzeichnungszeitpunkt (Diagnose)',
     recorded_at     TIMESTAMP COMMENT 'Wann dieser Stand zuletzt erfolgreich verarbeitet wurde'
 )
-STORED AS PARQUET
+STORED BY ICEBERG {ICEBERG_TBLPROPERTIES}
 """
 
 
+def table_exists(cur, table_name):
+    cur.execute(f"SHOW TABLES LIKE '{table_name}'")
+    return len(cur.fetchall()) > 0
+
+
+def is_iceberg_table(cur, table_name):
+    """Prueft gezielt die Table-Parameter-Zeile 'table_type' = 'ICEBERG' aus
+    DESCRIBE FORMATTED (Impala kennt kein SHOW TBLPROPERTIES). Bei diesen
+    Zeilen liegt der Property-Name in Spalte 2, der Wert in Spalte 3 (Spalte 1
+    ist leer) - gezielter Spaltenvergleich statt einer Substring-Suche ueber
+    den gesamten Freitext-Dump, robuster gegenueber Format-Aenderungen."""
+    cur.execute(f"DESCRIBE FORMATTED {table_name}")
+    for row in cur.fetchall():
+        key = (row[1] or "").strip() if len(row) > 1 else ""
+        if key == "table_type":
+            value = (row[2] or "").strip() if len(row) > 2 else ""
+            return value.upper() == "ICEBERG"
+    return False
+
+
+def ensure_iceberg_table_like(cur, table_name, source_fqn, partition_spec=None):
+    """
+    Stellt sicher, dass table_name als ICEBERG-Tabelle mit dem Schema von
+    source_fqn existiert (Iceberg ist Voraussetzung fuer MERGE INTO/DELETE
+    und fuer atomare INSERT OVERWRITE-Snapshots, s. ADR.md):
+
+      1) Tabelle existiert noch nicht -> frisch als Iceberg anlegen.
+         "CREATE TABLE ... LIKE ... STORED BY ICEBERG" schlaegt fehl, wenn
+         die Quelltabelle selbst kein Iceberg ist ("cannot be cloned into
+         an Iceberg table") - deshalb stattdessen CTAS mit WHERE 1=0:
+         uebernimmt Spalten/Typen 1:1, aber keine Zeilen.
+      2) Tabelle existiert bereits als Iceberg -> nichts zu tun (idempotent,
+         der Normalfall ab dem zweiten Lauf).
+      3) Tabelle existiert noch als Parquet -> FEHLER mit klarer Anleitung,
+         statt automatisch und lautlos zu migrieren. Eine Storage-Format-
+         Migration ist ein einmaliger, strukturell heikler Vorgang (CTAS
+         ueber die komplette Tabelle + Rename-Swap) - das gehoert NICHT in
+         den taeglichen Pipeline-Lauf. Migration:
+         src/utils/migrate_to_iceberg.py (einmalig, idempotent, mit
+         sichtbarer Fortschrittsausgabe).
+
+    partition_spec (optional): Iceberg-Partition-Transform als SQL-Fragment,
+    z.B. "PARTITIONED BY SPEC (TRUNCATE(4, dt))" fuer die Klimadaten -
+    partitioniert nach Jahres-Praefix des ISO-Datums-Strings (Iceberg
+    "hidden partitioning": Abfragen/INSERTs muessen die Partition nie
+    explizit nennen, Impala prunt WHERE dt > '...' automatisch).
+    """
+    if not table_exists(cur, table_name):
+        spec_sql = f" {partition_spec}" if partition_spec else ""
+        cur.execute(
+            f"CREATE TABLE {table_name}{spec_sql} STORED BY ICEBERG "
+            f"{ICEBERG_TBLPROPERTIES} AS SELECT * FROM {source_fqn} WHERE 1=0"
+        )
+        return
+
+    if not is_iceberg_table(cur, table_name):
+        raise RuntimeError(
+            f"{table_name} existiert noch als Parquet-Tabelle, die Pipeline "
+            "erwartet aber Iceberg. Bitte einmalig "
+            "'.venv/Scripts/python.exe src/utils/migrate_to_iceberg.py' "
+            "ausfuehren und die Pipeline danach erneut starten."
+        )
+
+
 def ensure_state_table(cur):
-    """Legt die State-Tabelle an, falls sie noch nicht existiert (idempotent,
-    analog zu den CREATE TABLE IF NOT EXISTS-Aufrufen in create_datamodel.py)."""
+    """Legt die State-Tabelle an, falls sie noch nicht existiert (idempotent).
+    Bricht mit klarer Anleitung ab, falls sie noch als Parquet-Tabelle aus
+    einem aelteren Stand existiert (record_state braucht MERGE INTO)."""
+    if table_exists(cur, STATE_TABLE):
+        if not is_iceberg_table(cur, STATE_TABLE):
+            raise RuntimeError(
+                f"{STATE_TABLE} existiert noch als Parquet-Tabelle (alter "
+                "Append-Only-Stand). Bitte einmalig "
+                "'.venv/Scripts/python.exe src/utils/migrate_to_iceberg.py' "
+                "ausfuehren und die Pipeline danach erneut starten."
+            )
+        return
     cur.execute(CREATE_STATE_TABLE)
 
 
 def get_latest_state(cur, stage, table_name):
     """
-    Liefert den juengsten State-Eintrag (nach recorded_at) fuer
-    (stage, table_name) als dict, oder None, falls es noch keinen gibt
-    (= erster Lauf fuer diese Tabelle/Stufe -> Full Load noetig).
-
-    Holt bewusst ALLE Zeilen fuer den Schluessel und bestimmt das Maximum in
-    Python statt per SQL ORDER BY ... LIMIT 1: die Tabelle waechst nur um
-    wenige Zeilen pro Pipeline-Lauf, ein voller Fetch ist hier unproblematisch
-    und vermeidet Annahmen ueber Impala-spezifisches ORDER BY/LIMIT-Verhalten
-    auf potenziell NULL-haltigen Spalten.
+    Liefert den State-Eintrag fuer (stage, table_name) als dict, oder None,
+    falls es noch keinen gibt (= erster Lauf fuer diese Tabelle/Stufe ->
+    Full Load noetig). Dank Upsert (s. record_state) existiert je Schluessel
+    hoechstens eine Zeile - ein einfacher SELECT genuegt.
     """
     cur.execute(
         f"SELECT watermark_value, content_hash, row_count, recorded_at "
@@ -72,7 +145,7 @@ def get_latest_state(cur, stage, table_name):
     if not rows:
         return None
 
-    watermark_value, content_hash, row_count, recorded_at = max(rows, key=lambda r: r[3])
+    watermark_value, content_hash, row_count, recorded_at = rows[0]
     return {
         "watermark_value": watermark_value,
         "content_hash": content_hash,
@@ -91,17 +164,34 @@ def _sql_string_or_null(value):
 
 
 def record_state(cur, stage, table_name, watermark_value=None, content_hash=None, row_count=None):
-    """Haengt einen neuen State-Eintrag an (APPEND-ONLY, s. Modul-Docstring).
+    """
+    UPSERT des State-Eintrags per MERGE INTO (Iceberg): existiert schon ein
+    Eintrag fuer (stage, table_name), wird er aktualisiert, sonst eingefuegt.
+    Jeder Aufruf ist ein eigener Iceberg-Snapshot - die komplette Historie
+    bleibt damit per DESCRIBE HISTORY / Time Travel abfragbar (s.
+    Modul-Docstring), ohne dass die Tabelle waechst.
+
     Nur aufrufen, wenn die Tabelle tatsaechlich (neu) verarbeitet wurde -
     bei einem uebersprungenen, unveraenderten Lauf bleibt der bisherige
-    Eintrag bestehen und bleibt damit korrekt der "zuletzt geaenderte" Stand."""
+    Eintrag bestehen und bleibt damit korrekt der "zuletzt geaenderte"
+    Stand (wichtig fuer should_skip_target_build in
+    pipeline_audit_to_target.py, das recorded_at der Stufen vergleicht).
+    """
+    row_count_sql = str(row_count) if row_count is not None else "CAST(NULL AS BIGINT)"
     cur.execute(
-        f"INSERT INTO {STATE_TABLE} "
-        f"(stage, table_name, watermark_value, content_hash, row_count, recorded_at) "
-        f"VALUES ("
-        f"'{stage}', '{table_name}', "
-        f"{_sql_string_or_null(watermark_value)}, {_sql_string_or_null(content_hash)}, "
-        f"{row_count if row_count is not None else 'NULL'}, now())"
+        f"MERGE INTO {STATE_TABLE} t USING ("
+        f"SELECT CAST('{stage}' AS STRING) AS stage, "
+        f"CAST('{table_name}' AS STRING) AS table_name, "
+        f"CAST({_sql_string_or_null(watermark_value)} AS STRING) AS watermark_value, "
+        f"CAST({_sql_string_or_null(content_hash)} AS STRING) AS content_hash, "
+        f"CAST({row_count_sql} AS BIGINT) AS row_count, "
+        f"now() AS recorded_at"
+        f") src ON t.stage = src.stage AND t.table_name = src.table_name "
+        f"WHEN MATCHED THEN UPDATE SET watermark_value = src.watermark_value, "
+        f"content_hash = src.content_hash, row_count = src.row_count, "
+        f"recorded_at = src.recorded_at "
+        f"WHEN NOT MATCHED THEN INSERT (stage, table_name, watermark_value, content_hash, row_count, recorded_at) "
+        f"VALUES (src.stage, src.table_name, src.watermark_value, src.content_hash, src.row_count, src.recorded_at)"
     )
 
 
@@ -141,120 +231,3 @@ def content_signature(cur, table_name, columns):
     )
     row_count, hash_sum = cur.fetchone()
     return row_count, (str(hash_sum) if hash_sum is not None else None)
-
-
-# -----------------------------------------------------------------------------
-# ZEILENGENAUES INCREMENTAL MERGE fuer Snapshot-Tabellen MIT Business-Key
-# (bauland, bevoelkerungzahlen - s. audit_table_keyed_snapshot in
-# pipeline_staging_to_audit.py). content_signature() oben beantwortet nur
-# "hat sich IRGENDWO in der Tabelle etwas geaendert" (Tabellenebene). Die
-# beiden folgenden Tabellen ermoeglichen es, GENAU DIESE Zeilen zu bestimmen:
-# ROW_STATE_TABLE merkt sich einen Inhalts-Hash JE ZEILE (ueber einen fachlichen
-# Business-Key), CHANGED_KEYS_TABLE ist ein kurzlebiger Join-Partner, um genau
-# die neuen/geaenderten/geloeschten Keys innerhalb EINES Merge-Laufs
-# wiederzufinden (Impala kennt keine Arrays/Variablen als Bind-Parameter fuer
-# potenziell tausende Keys - eine kleine Hilfstabelle + JOIN ist der uebliche
-# Impala/Hive-Weg dafuer).
-# -----------------------------------------------------------------------------
-
-ROW_STATE_TABLE = "gruppe3_etl_row_state"
-CHANGED_KEYS_TABLE = "gruppe3_etl_changed_keys_tmp"
-
-CREATE_ROW_STATE_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {ROW_STATE_TABLE} (
-    table_name  STRING COMMENT 'Fachlicher Tabellenname, z.B. bauland',
-    row_key     STRING COMMENT 'Business-Key der Zeile (CONCAT_WS(...) mehrerer Spalten), s. KEY_COLUMNS in pipeline_staging_to_audit.py',
-    row_hash    STRING COMMENT 'FNV_HASH-Pruefsumme des Zeileninhalts. NULL = Tombstone (Key wurde zu recorded_at aus der Quelle entfernt, s. get_latest_row_hashes)',
-    recorded_at TIMESTAMP COMMENT 'Wann dieser Hash zuletzt aufgezeichnet wurde'
-)
-STORED AS PARQUET
-"""
-
-CREATE_CHANGED_KEYS_TABLE = f"""
-CREATE TABLE IF NOT EXISTS {CHANGED_KEYS_TABLE} (
-    row_key STRING COMMENT 'Business-Key einer neuen/geaenderten/geloeschten Zeile - nur fuer die Dauer EINES Merge-Laufs gueltig, wird pro verarbeiteter Tabelle komplett neu befuellt'
-)
-STORED AS PARQUET
-"""
-
-
-def ensure_row_state_table(cur):
-    cur.execute(CREATE_ROW_STATE_TABLE)
-
-
-def ensure_changed_keys_table(cur):
-    cur.execute(CREATE_CHANGED_KEYS_TABLE)
-
-
-def get_latest_row_hashes(cur, table_name):
-    """
-    Liefert {row_key: row_hash} mit dem JEWEILS juengsten aufgezeichneten Hash
-    je Key (ROW_STATE_TABLE ist append-only wie gruppe3_etl_state, s. dortige
-    Begruendung - "aktuell" ist immer der juengste recorded_at-Eintrag je Key).
-    Holt die komplette Historie fuer table_name und reduziert in Python -
-    fuer die Groessenordnung dieses Projekts (max. niedrige zehntausend Keys
-    bei bauland) unproblematisch, vermeidet ein Window-Function-Konstrukt in SQL.
-
-    Keys, deren JUENGSTER Eintrag row_hash IS NULL ist (Tombstone, s.
-    record_row_hashes), werden NICHT zurueckgegeben - sie gelten als "zu
-    diesem Zeitpunkt bereits aus der Quelle entfernt und in der Audit-Tabelle
-    bereits geloescht". Ohne diesen Ausschluss wuerde audit_table_keyed_snapshot()
-    einen einmal geloeschten Key bei JEDEM weiteren Lauf erneut als "geloescht"
-    erkennen (er bliebe ja fuer immer in der Historie stehen) und dadurch
-    faelschlich unendlich oft einen Merge-Lauf ausloesen, obwohl er in der
-    Audit-Tabelle laengst nicht mehr vorkommt.
-    """
-    cur.execute(
-        f"SELECT row_key, row_hash, recorded_at FROM {ROW_STATE_TABLE} WHERE table_name = '{table_name}'"
-    )
-    latest_hash = {}
-    latest_ts = {}
-    for row_key, row_hash, recorded_at in cur.fetchall():
-        if row_key not in latest_ts or recorded_at > latest_ts[row_key]:
-            latest_hash[row_key] = row_hash
-            latest_ts[row_key] = recorded_at
-    return {k: v for k, v in latest_hash.items() if v is not None}
-
-
-def record_row_hashes(cur, table_name, key_hash_pairs, batch_size=500):
-    """
-    Haengt fuer jedes (row_key, row_hash)-Paar einen neuen Eintrag an
-    (APPEND-ONLY). NUR fuer tatsaechlich neue/geaenderte/geloeschte Keys
-    aufrufen - unveraenderte Keys brauchen keinen neuen Eintrag, ihr letzter
-    Hash bleibt weiterhin der gueltige "aktuelle" Stand (s.
-    get_latest_row_hashes). Das haelt das Wachstum dieser Tabelle an die
-    tatsaechliche Aenderungsrate gekoppelt, nicht an die Tabellengroesse.
-
-    row_hash=None schreibt einen TOMBSTONE (Key wurde aus der Quelle
-    entfernt, s. get_latest_row_hashes) - _sql_string_or_null() wandelt das
-    korrekt in SQL NULL um.
-
-    Batch-INSERT in Chunks (analog zu overwrite_table() in
-    pipeline_audit_to_target.py) statt ein Statement je Zeile.
-    """
-    pairs = list(key_hash_pairs)
-    for start in range(0, len(pairs), batch_size):
-        chunk = pairs[start:start + batch_size]
-        values_sql = ", ".join(
-            f"('{table_name}', {_sql_string_or_null(k)}, {_sql_string_or_null(h)}, now())"
-            for k, h in chunk
-        )
-        cur.execute(
-            f"INSERT INTO {ROW_STATE_TABLE} (table_name, row_key, row_hash, recorded_at) VALUES {values_sql}"
-        )
-
-
-def load_changed_keys(cur, row_keys, batch_size=500):
-    """
-    Ersetzt den kompletten Inhalt von gruppe3_etl_changed_keys_tmp durch die
-    uebergebenen Keys (TRUNCATE + Batch-INSERT). Diese Tabelle ist bewusst
-    KEIN persistenter State, sondern nur ein kurzlebiger Join-Partner fuer
-    GENAU EINEN Merge-Schritt (s. audit_table_keyed_snapshot in
-    pipeline_staging_to_audit.py) - wird vor jeder Tabelle neu befuellt.
-    """
-    cur.execute(f"TRUNCATE TABLE {CHANGED_KEYS_TABLE}")
-    keys = list(row_keys)
-    for start in range(0, len(keys), batch_size):
-        chunk = keys[start:start + batch_size]
-        values_sql = ", ".join(f"({_sql_string_or_null(k)})" for k in chunk)
-        cur.execute(f"INSERT INTO {CHANGED_KEYS_TABLE} (row_key) VALUES {values_sql}")

@@ -32,14 +32,13 @@ ACHTUNG - UNGETESTETE ANNAHMEN, DIE IHR VOR DEM ERSTEN LAUF PRUEFEN MUESST:
     andere Parameter-Namen erwartet.
   - Schreiben: Spark erkennt "jdbc:impala://" nicht als eigenen SQL-Dialekt
     und faellt auf einen generischen Dialekt zurueck (doppelte Anfuehrungs-
-    zeichen, Typ TEXT) - die Option .option("truncate","true") fuehrt dadurch
-    NICHT zu einem echten TRUNCATE, sondern Spark versucht beim Existenz-Check
-    eine fuer Impala ungueltige Abfrage und faellt auf DROP+CREATE TABLE
-    zurueck, was an Impalas Syntax scheitert (getestet, schlaegt fehl).
-    Workaround: TRUNCATE TABLE wird separat per impyla ausgefuehrt (das
-    Statement, das auch pipeline.py/impyla problemlos versteht), danach
-    schreibt Spark nur noch per mode="append" - reines INSERT, ohne dass
-    Spark irgendetwas am Tabellenschema anfasst.
+    zeichen, Typ TEXT) - df.write.jdbc() gegen Impala scheitert daher
+    zuverlaessig (getestet). Workaround: die Ergebniszeilen werden per
+    collect() geholt und ueber impyla als INSERT INTO ... VALUES-Batches in
+    eine Iceberg-Shadow-Tabelle geschrieben; veroeffentlicht wird am Ende
+    mit einem einzigen, atomaren "INSERT OVERWRITE ziel SELECT * FROM
+    shadow" (s. overwrite_table - Konsumenten sehen nie einen halb
+    geschriebenen Stand).
 
 Der JDBC-Treiber liegt unter src/utils/ImpalaJDBC42.jar (nicht eingecheckt,
 muss lokal vorhanden sein) - Pfad wird unten ueber JDBC_JAR_PATH referenziert.
@@ -75,7 +74,13 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType
 
 from db import get_connection
-from etl_state import ensure_state_table, get_latest_state, record_state
+from etl_state import (
+    ensure_state_table,
+    get_latest_state,
+    record_state,
+    table_exists,
+    ICEBERG_TBLPROPERTIES,
+)
 
 DATABASE = os.getenv("DATABASE", "gruppe3")
 JDBC_JAR_PATH = os.path.join(os.path.dirname(__file__), "utils", "ImpalaJDBC42.jar")
@@ -177,24 +182,6 @@ def read_gemeinden(spark):
     )
 
 
-def truncate_table(table_name):
-    """
-    Leert die Zieltabelle per impyla (TRUNCATE TABLE), BEVOR Spark schreibt.
-    Grund: Spark erkennt den Impala-JDBC-Dialekt nicht und wuerde bei
-    .option("truncate","true") versuchen, Existenz-Check/CREATE TABLE mit
-    einem generischen (fuer Impala syntaktisch falschen) SQL-Dialekt
-    auszufuehren - s. Hinweis im Modul-Docstring. TRUNCATE TABLE selbst
-    versteht Impala über impyla aber problemlos (gleiches Pattern wie in
-    pipeline.py).
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"USE {DATABASE}")
-    cur.execute(f"TRUNCATE TABLE {table_name}")
-    cur.close()
-    conn.close()
-
-
 def _sql_literal(value):
     """Wandelt einen Python-/Spark-Wert in ein SQL-Literal fuer INSERT...VALUES um."""
     if value is None:
@@ -216,9 +203,24 @@ def _sql_literal(value):
 
 def overwrite_table(df, table_name, batch_size=500):
     """
-    Sammelt die Ergebniszeilen ein, leert danach die Zieltabelle
-    (truncate_table) und schreibt per impyla als INSERT INTO ... VALUES
-    (...)-Batches.
+    ATOMARER PUBLISH (Write-Audit-Publish konsequent zu Ende gedacht):
+    sammelt die Ergebniszeilen ein (collect()), schreibt sie per impyla als
+    INSERT INTO ... VALUES-Batches zunaechst in eine unsichtbare
+    Shadow-Tabelle ({table_name}_wap_incoming, Iceberg, gleiches Schema wie
+    das Ziel) und veroeffentlicht sie erst am Ende mit EINEM einzigen
+    "INSERT OVERWRITE ziel SELECT * FROM shadow" - auf Iceberg ein einzelner
+    atomarer Snapshot-Commit.
+
+    WARUM DER UMWEG UEBER DIE SHADOW-TABELLE?
+    Die fruehere Fassung hat das sichtbare Datenprodukt erst per TRUNCATE
+    geleert und dann batchweise wieder befuellt - ein Konsument, der genau
+    dazwischen liest, haette eine leere oder halb gefuellte Faktentabelle
+    gesehen. Mit dem Shadow-Swap sieht ein Konsument zu JEDEM Zeitpunkt
+    entweder den kompletten alten oder den kompletten neuen Stand - und der
+    alte Stand bleibt als Iceberg-Snapshot per Time Travel abfragbar
+    (SELECT ... FOR SYSTEM_TIME AS OF ...). Die Shadow-Tabelle bleibt
+    zwischen den Laeufen leer stehen (winziger Metadaten-Footprint) und ist
+    NICHT Teil des Data Contracts.
 
     WARUM NICHT df.write.jdbc(...)?
     Probiert, schlaegt aber zuverlaessig fehl: der Impala-JDBC-Treiber kann
@@ -232,24 +234,33 @@ def overwrite_table(df, table_name, batch_size=500):
     einfuegen, ganz ohne Parameter-Bindung.
     """
     rows = df.collect()
-    truncate_table(table_name)
-
-    if not rows:
-        return
-
     columns = df.columns
     col_list = ", ".join(columns)
+    shadow_table = f"{table_name}_wap_incoming"
 
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"USE {DATABASE}")
+
+    # Shadow-Tabelle anlegen (einmalig): Schema 1:1 vom Ziel per CTAS WHERE 1=0
+    # ("CREATE ... LIKE ... STORED BY ICEBERG" geht nur von Iceberg-Quellen).
+    if not table_exists(cur, shadow_table):
+        cur.execute(
+            f"CREATE TABLE {shadow_table} STORED BY ICEBERG {ICEBERG_TBLPROPERTIES} "
+            f"AS SELECT * FROM {table_name} WHERE 1=0"
+        )
+    cur.execute(f"TRUNCATE TABLE {shadow_table}")
 
     for start in range(0, len(rows), batch_size):
         chunk = rows[start:start + batch_size]
         values_sql = ", ".join(
             "(" + ", ".join(_sql_literal(v) for v in row) + ")" for row in chunk
         )
-        cur.execute(f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql}")
+        cur.execute(f"INSERT INTO {shadow_table} ({col_list}) VALUES {values_sql}")
+
+    # Der eigentliche PUBLISH: ein einzelnes, atomares Statement.
+    cur.execute(f"INSERT OVERWRITE TABLE {table_name} SELECT * FROM {shadow_table}")
+    cur.execute(f"TRUNCATE TABLE {shadow_table}")
 
     cur.close()
     conn.close()

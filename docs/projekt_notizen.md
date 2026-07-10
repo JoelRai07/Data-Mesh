@@ -65,12 +65,13 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
     Full Rewrite mehr im Regelbetrieb.
   - `bauland`/`bevoelkerungzahlen`/`gemeinden` (amtliche Statistiken/Stammdaten,
     keine verlässliche Änderungsspalte, mögliche nachträgliche Revisionen):
-    Change Detection per Inhalts-Prüfsumme — Full Refresh (`INSERT OVERWRITE`)
-    nur, wenn sich der Tabelleninhalt tatsächlich geändert hat, sonst wird der
-    Lauf übersprungen. In der **Audit-Stufe** gehen `bauland`/`bevoelkerungzahlen`
-    sogar **zeilengenau**: Inhalts-Hash je Business-Key, nur neue/geänderte/
-    gelöschte Zeilen werden ersetzt (`gemeinden` bewusst nicht — kein
-    NULL-freier Schlüssel, s. Kommentar bei `KEY_COLUMNS`).
+    Change Detection per Inhalts-Prüfsumme — Full Refresh (`INSERT OVERWRITE`,
+    auf Iceberg ein atomarer Snapshot) nur, wenn sich der Tabelleninhalt
+    tatsächlich geändert hat, sonst wird der Lauf übersprungen. In der
+    **Audit-Stufe** gehen `bauland`/`bevoelkerungzahlen` sogar **zeilengenau**:
+    Iceberg `DELETE` + `MERGE INTO` mit NULL-sicherem Spaltenvergleich, nur
+    neue/geänderte/gelöschte Zeilen werden angefasst (`gemeinden` bewusst
+    nicht — kein NULL-freier Schlüssel, s. Kommentar bei `KEY_COLUMNS`).
   - Zielschicht (Star-Schema, `pipeline_audit_to_target.py`): bleibt Full Rebuild
     (Fenster-Funktionen brauchen ganze Kreis+Jahr-Partitionen, Fakten sind klein),
     aber der komplette Spark-Lauf wird übersprungen, wenn sich seit dem letzten
@@ -82,12 +83,18 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
   Präsentation:** produktiv gehörte der Scheduler auf die Plattform, z.B.
   **Cloudera Data Engineering / Apache Airflow**, statt auf einen Laptop.
 
-## 7. Warum Star-Schema / Parquet (OLTP vs. OLAP)
+## 7. Warum Star-Schema / Iceberg-auf-Parquet (OLTP vs. OLAP)
 - **OLTP** = operativ (schreiben, normalisiert/3. NF). **OLAP** = analytisch
   (lesen/aggregieren, denormalisiert). Man kopiert Daten vom operativen in ein
   analytisches System (= die Pipeline).
 - **Star-Schema** = denormalisiert → wenige Joins → schnell → in der Cloud billig.
 - **Parquet** = spaltenweise Speicherung → ideal fürs Lesen weniger Spalten.
+- **Apache Iceberg** = offenes Tabellenformat ÜBER den Parquet-Dateien:
+  atomare Snapshot-Commits (nie halb geschriebene Tabellen), zeilengenaues
+  `MERGE INTO`/`UPDATE`/`DELETE`, Time Travel (`FOR SYSTEM_TIME AS OF`),
+  hidden partitioning (`TRUNCATE(4, dt)` = Jahr, ohne dass Abfragen die
+  Partition kennen müssen). Prüfungs-Einzeiler: „Parquet ist das Dateiformat,
+  Iceberg das Tabellenformat darüber."
 
 ## 8. Data Mesh (Theorie — kommt in der Fragerunde!)
 - Data Mesh ist **keine Technologie**, sondern Organisations-/Architektur-Konzept.
@@ -113,15 +120,15 @@ Datenprodukt verbunden werden. Rohdaten liegen fertig auf Impala — es muss
   NULL-Quoten je Spalte stehen im Data Contract.
 
 ## 10. Stand: was aus den Folien umgesetzt ist
-**Umgesetzt:** Star-Schema, Denormalisierung, Parquet, Unpivot/Pivot, Incremental
-Load (Wasserzeichen + Change Detection, s. Punkt 6), Batch, Scheduler, „Data as
-a Product".
+**Umgesetzt:** Star-Schema, Denormalisierung, Iceberg-auf-Parquet, Unpivot/Pivot,
+Incremental Load (Wasserzeichen + Change Detection + zeilengenauer Merge,
+s. Punkt 6), Batch, Scheduler, „Data as a Product".
 **Anders:** Pipeline in Spark statt NiFi (vom Prof erlaubt/bevorzugt).
 **Erledigt statt offen:** Data Contract ✔ (`docs/data_contract.yaml`),
-Encoding-Bereinigung ✔, Score-Fix ausgerollt ✔ (3.911/4.099 gefüllt).
-**Kür-Idee:** Open Table Format / **Iceberg** statt nur Parquet (würde v.a.
-echtes row-level MERGE/UPDATE ermöglichen, das plain Impala/Parquet nicht
-kann — s. Doku in `src/etl_state.py`).
+Encoding-Bereinigung ✔, Score-Fix ausgerollt ✔ (3.911/4.099 gefüllt),
+**Kür umgesetzt:** Open Table Format / **Apache Iceberg** über die komplette
+Pipeline ✔ — echtes row-level `MERGE INTO`/`DELETE`, atomare Publish-Snapshots,
+Time Travel, Jahres-Partitionierung der Klimadaten (s. `ADR.md`).
 
 ## 11. Offene Punkte vor der Abgabe
 → zentrale Aufgabenliste: [../TODO.md](../TODO.md) (einzige Quelle, hier nicht dupliziert).

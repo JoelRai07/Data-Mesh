@@ -9,8 +9,13 @@ Gruppen-Datenbank **`gruppe3`**.
 Die Pipeline folgt dem **Write-Audit-Publish-Pattern** (WAP, s. Vorlesung 3) in
 drei Stufen und lädt **inkrementell** (Incremental-Loader-Pattern: Wasserzeichen,
 zeilengenauer Key-Merge bzw. Inhalts-Prüfsummen — unveränderte Quellen werden
-übersprungen). Die eigentlichen Transformationen (Unpivot, Pivot,
-Window-Funktionen) laufen in **Apache Spark** (PySpark, DataFrame-API).
+übersprungen). **Alle Tabellen aller Schichten (Staging, Audit, Datenprodukt,
+ETL-State) sind Apache-Iceberg-Tabellen** — das liefert zeilengenaues
+`MERGE INTO`/`DELETE`, atomare `INSERT OVERWRITE`-Snapshots (Konsumenten sehen
+nie einen halb geschriebenen Stand), Time Travel und Jahres-Partitionierung
+der Klimadaten (Details: [ADR.md](ADR.md)). Die eigentlichen Transformationen
+(Unpivot, Pivot, Window-Funktionen) laufen in **Apache Spark** (PySpark,
+DataFrame-API).
 
 Die vier abgegebenen Arbeitsergebnisse:
 
@@ -63,26 +68,43 @@ schleusen. Spark wird dort eingesetzt, wo es echten Mehrwert hat: Unpivot per
 (`STDDEV() OVER` für den z-Score — in Impala-SQL nicht möglich).
 
 **Wie funktioniert das Incremental Loading?** Den zuletzt verarbeiteten Stand
-merkt sich die Pipeline in `gruppe3_etl_state` bzw. `gruppe3_etl_row_state`
-(append-only, weil Impala auf Parquet-Tabellen kein UPDATE/MERGE kennt —
-s. [src/etl_state.py](src/etl_state.py)). Drei Strategien, je nach Tabellenart:
+merkt sich die Pipeline in `gruppe3_etl_state` (Iceberg, ein Eintrag je
+Stufe+Tabelle, per `MERGE INTO` geupsertet; die Verlaufs-Historie liegt in den
+Iceberg-Snapshots — s. [src/etl_state.py](src/etl_state.py)). Drei Strategien,
+je nach Tabellenart:
 
 - **Wasserzeichen** (Klimadaten, echte Zeitreihe über `dt`): nur neuere Zeilen
-  werden angehängt — kein täglicher Full-Rewrite von 8,6 Mio. Zeilen.
+  werden angehängt — kein täglicher Full-Rewrite von 8,6 Mio. Zeilen. Die
+  Iceberg-Partitionierung `TRUNCATE(4, dt)` (= Jahr) macht den
+  Wasserzeichen-Filter zusätzlich zum Partition-Prune.
 - **Zeilengenauer Merge** (Bauland, Bevölkerung — Tabellen mit Business-Key):
-  FNV-Hash je Zeile, nur neue/geänderte/gelöschte Keys werden ersetzt
-  (per `CREATE TABLE … AS SELECT` + Rename-Swap, da Impala kein MERGE hat).
-- **Inhalts-Prüfsumme** (Gemeinden — kein verlässlicher Key): Full Refresh nur,
-  wenn sich die Prüfsumme der Quelle geändert hat.
+  billiger Prüfsummen-Vor-Check; bei Änderung direktes Iceberg
+  `DELETE` + `MERGE INTO` gegen die Audit-Tabelle mit NULL-sicherem
+  Spaltenvergleich (`t.col <=> src.col`) — nur tatsächlich neue/geänderte/
+  gelöschte Zeilen werden angefasst, die Audit-Tabelle selbst ist der
+  Vergleichsstand (keine separate Zeilen-Hash-Historie nötig).
+- **Inhalts-Prüfsumme** (Gemeinden — kein verlässlicher Key): die ganze
+  Tabelle wird serverseitig gehasht (`FNV_HASH` je Zeile + `SUM`) und mit dem
+  gespeicherten Hash verglichen. Unverändert → Schritt wird übersprungen;
+  geändert → Full Refresh per `INSERT OVERWRITE` (auf Iceberg ein einzelner
+  atomarer Snapshot-Commit).
+
+Der Skip-Mechanismus zieht sich durch die **ganze** Pipeline: Stufe 3
+überspringt den kompletten Spark-Lauf, wenn sich seit dem letzten Ziel-Build
+keine Audit-Tabelle geändert hat, und der Publish selbst ist ein atomarer
+Shadow-Swap (s. `overwrite_table` in
+[src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py)).
 
 Die fachlichen Begründungen stehen ausführlich in den Modul-Docstrings der
-jeweiligen Skripte.
+jeweiligen Skripte; die Iceberg-Entscheidung inkl. aller live verifizierten
+Iterationen in [ADR.md](ADR.md).
 
 ## Projektstruktur
 
 ```
 Data-Mesh/
 ├── README.md                        # Diese Datei
+├── ADR.md                           # Apache-Iceberg-Entscheidung (alle Iterationen, live verifiziert)
 ├── requirements.txt                 # Python-Abhängigkeiten (impyla, pyspark, APScheduler, dotenv, PyYAML)
 ├── .env.example                     # Vorlage für Zugangsdaten → kopieren nach .env
 ├── .env                             # Echte Zugangsdaten (NICHT eingecheckt)
@@ -98,12 +120,13 @@ Data-Mesh/
 │   ├── pipeline_staging_to_audit.py     # Stufe 2: Staging → Audit (Bereinigung, inkrementell)
 │   ├── pipeline_audit_to_target.py      # Stufe 3: Audit → Datenmodell (Spark, mit Skip-Check)
 │   ├── contract_check.py            # DELIVERABLE 3b: Data Contract als technisches Publish-Gate
-│   ├── etl_state.py                 # Incremental-Loading-Zustand (Wasserzeichen, Zeilen-Hashes)
+│   ├── etl_state.py                 # Incremental-Loading-Zustand (Iceberg-Upsert) + Iceberg-Helfer
 │   ├── scheduler.py                 # Täglicher Batch-Lauf um 00:00 (APScheduler)
 │   └── utils/
 │       ├── test_connection.py       # Prüft die Impala-Verbindung
 │       ├── inspect_tables.py        # Zeigt Schema + Zeilenzahl der Rohtabellen
 │       ├── reset_database.py        # Löscht ALLE gruppe3-Tabellen (Reset für End-to-End-Tests, fragt nach)
+│       ├── migrate_to_iceberg.py    # Einmalige Migration Parquet → Iceberg (alle Schichten, verlustfrei)
 │       └── ImpalaJDBC42.jar         # JDBC-Treiber für Spark (lokal bereitzustellen, s. Einrichtung)
 │
 ├── data/                            # Lokale CSV-Kopie zur Inspektion (nicht Teil der Pipeline)
@@ -134,11 +157,11 @@ Modul-Docstring am Dateianfang; tiefergehende Analysen liegen in `docs/`):
    `COMMENT` an jeder Spalte. Warum das Modell so aussieht:
    [docs/datenmodell_begruendung.md](docs/datenmodell_begruendung.md).
 4. **[src/pipeline_default_to_staging.py](src/pipeline_default_to_staging.py)** –
-   Stufe 1: exakte Kopie (Schema per `CREATE TABLE … LIKE`), inkl. der
+   Stufe 1: exakte Kopie (Schema per Iceberg-CTAS `WHERE 1=0`), inkl. der
    Entscheidung, welche Tabelle Wasserzeichen bekommt und welche Prüfsumme.
 5. **[src/etl_state.py](src/etl_state.py)** – das „Gedächtnis" der Pipeline:
-   warum die State-Tabellen append-only sind und wie die Zeilen-Hashes
-   funktionieren.
+   der Iceberg-Upsert-State (ein Eintrag je Stufe+Tabelle, Historie über
+   Iceberg-Snapshots) und die gemeinsamen Iceberg-Helfer aller Stufen.
 6. **[src/pipeline_staging_to_audit.py](src/pipeline_staging_to_audit.py)** –
    Stufe 2, die Datenbereinigung. Hier steckt die Lösung des Encoding-Problems
    (Korrektur-Mappings für irreparabel zerstörte Umlaute, Transliteration für
@@ -178,6 +201,15 @@ python -m venv .venv
 
 Die Stufen 1+2 einzeln und alle `utils/`-Skripte brauchen **kein** Java —
 nur Python + `.env`.
+
+**Einmalig bei bestehenden Tabellen aus einem älteren (Parquet-)Stand:**
+`.venv/Scripts/python.exe src/utils/migrate_to_iceberg.py` migriert alle
+`gruppe3`-Tabellen verlustfrei zu Iceberg (Zeilenzahl-Verifikation vor jedem
+Tausch, idempotent — bereits am 10.07.2026 gegen die echte Gruppen-Datenbank
+ausgeführt). Die Pipeline bricht mit einer klaren Fehlermeldung ab, falls sie
+auf eine noch nicht migrierte Tabelle trifft. Bei einer frisch zurückgesetzten
+Datenbank ist keine Migration nötig — alle Tabellen werden direkt als Iceberg
+angelegt.
 
 ## Benutzung
 
@@ -288,7 +320,13 @@ dieselben Tabellen und kämen sich ins Gehege).
 | Staging | `gruppe3_staging_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}` | unveränderte Rohkopie |
 | Audit | `gruppe3_audit_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}` | bereinigte Basis |
 | Datenprodukt | 4 × `gruppe3_dim_*`, 5 × `gruppe3_fact_*` | Star-Schema für Konsumenten |
-| ETL-Metadaten | `gruppe3_etl_state`, `gruppe3_etl_row_state`, `gruppe3_etl_changed_keys_tmp` | Incremental-Loading-Zustand (kein Konsumenten-Interface) |
+| ETL-Metadaten | `gruppe3_etl_state`, 9 × `*_wap_incoming` (leere Publish-Shadow-Tabellen) | Incremental-Loading-Zustand + atomarer Publish (kein Konsumenten-Interface) |
+
+Alle Tabellen sind **Apache-Iceberg-Tabellen** (`format-version` 2); die
+Klimadaten-Tabellen sind per Iceberg-Transform `TRUNCATE(4, dt)` nach Jahr
+partitioniert. Jeder Schreibvorgang ist ein Iceberg-Snapshot — `DESCRIBE
+HISTORY <tabelle>` zeigt die Historie, `SELECT … FOR SYSTEM_TIME AS OF …`
+liest einen früheren Stand (Time Travel).
 
 **Das Datenprodukt** (Zeilenzahlen Stand 06.07.2026):
 
@@ -324,11 +362,22 @@ Schema, Nutzungsregeln, gemessene Qualität und Beispiel-Queries:
 - [x] Data Contract + technische Durchsetzung als Publish-Gate
 - [ ] Restpunkte unten
 
+**Bereits live verifiziert (10.07.2026, gegen die echte DHBW-Datenbank):**
+die einmalige Iceberg-Migration aller 20 Tabellen (Zeilenzahlen identisch),
+Stufe 1+2 mit Skip-Verhalten (unveränderte Quellen → alle Schritte
+übersprungen), der erzwungene Änderungspfad (DELETE+MERGE für
+Bauland/Bevölkerung, Full Refresh für Gemeinden — Inhalts-Prüfsummen vor/nach
+identisch, zweiter Lauf skippt wieder) sowie `contract_check.py` mit 32/32
+Checks OK.
+
 **Offene Arbeiten:**
 
-1. **End-to-End-Abnahmetest:** `utils/reset_database.py` → `run_pipeline.py` →
-   zweiter Lauf direkt danach muss überall „übersprungen" melden; dabei muss
-   `contract_check.py` am Ende mit 0 Fehlern bestehen.
+1. **End-to-End-Abnahmetest inkl. Stufe 3:** auf einem Rechner mit JDK 17 +
+   `ImpalaJDBC42.jar`: `run_pipeline.py` komplett (inkl. Spark-Stufe gegen die
+   jetzt Iceberg-basierten Audit-Tabellen; laut ADR.md liest der JDBC-Pfad
+   Iceberg wie Parquet, nach dem Shadow-Swap-Umbau von `overwrite_table`
+   aber erneut zu bestätigen). Danach optional: `utils/reset_database.py` →
+   `run_pipeline.py` → zweiter Lauf muss überall „übersprungen" melden.
 2. **Abgabe-Hygiene klären (Team):** bleiben `docs/coursematerial/` (13 MB
    Prof-Folien), `reference/` und `TODO.md` im Abgabe-Repo?
 3. **Data-Contract-Härtung (optional):** weitere ausführbare `quality`-SQLs

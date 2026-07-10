@@ -14,7 +14,16 @@ Eigenschaften (s. Begruendung in docs/datenmodell_begruendung.md):
     Zuordnung ebenfalls per Namens-Match nach Transliteration/Exonym-Mapping
   - fact_standortprofil_kpi ist eine aggregierte Cross-Table-Faktentabelle,
     die Bevoelkerung + Bauland + Klima + Gemeinde-Stammdaten zu KPIs verdichtet
-  - STORED AS PARQUET -> spaltenorientiert, ideal fuer analytische Abfragen
+  - STORED BY ICEBERG (format-version 2): die Daten liegen weiterhin
+    spaltenorientiert als Parquet-Dateien (ideal fuer analytische Abfragen),
+    Apache Iceberg legt eine Snapshot-/Metadaten-Schicht darueber. Fuer das
+    Datenprodukt heisst das: der Publish-Schritt ersetzt jede Tabelle mit
+    EINEM atomaren INSERT OVERWRITE (Konsumenten sehen nie einen halb
+    geschriebenen Stand, s. overwrite_table in pipeline_audit_to_target.py),
+    und jeder fruehere Stand bleibt per Time Travel abfragbar
+    (SELECT ... FOR SYSTEM_TIME AS OF ... / DESCRIBE HISTORY).
+    Bestehende Parquet-Tabellen aus einem aelteren Stand einmalig migrieren:
+    src/utils/migrate_to_iceberg.py.
   - CREATE TABLE IF NOT EXISTS -> idempotent (mehrfach ausfuehrbar)
 
 Ausfuehren:  .venv/Scripts/python.exe src/create_datamodel.py
@@ -55,7 +64,7 @@ CREATE TABLE IF NOT EXISTS {DIM_KREIS} (
     bundesland_id    STRING COMMENT 'Erste 2 Stellen des Regionalschluessels, z.B. 01',
     bundesland_name  STRING COMMENT 'Name des Bundeslandes, z.B. Schleswig-Holstein'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 # dim_jahr: die Zeit-Dimension.
@@ -64,7 +73,7 @@ CREATE TABLE IF NOT EXISTS {DIM_JAHR} (
     jahr       INT COMMENT 'Jahr (PK), z.B. 2024',
     jahrzehnt  INT COMMENT 'Jahrzehnt, z.B. 2020'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 # dim_gemeinde: Bruecken-Dimension zwischen Kreis-Ebene und Klimastadt-Ebene.
@@ -81,7 +90,7 @@ CREATE TABLE IF NOT EXISTS {DIM_GEMEINDE} (
     latitude         DOUBLE COMMENT 'Breitengrad',
     longitude        DOUBLE COMMENT 'Laengengrad'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 # dim_klimastadt: deutsche Staedte aus den Klimadaten (distinct city/lat/long).
@@ -91,7 +100,7 @@ CREATE TABLE IF NOT EXISTS {DIM_KLIMASTADT} (
     latitude    DOUBLE COMMENT 'Breitengrad',
     longitude   DOUBLE COMMENT 'Laengengrad'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 
@@ -111,7 +120,7 @@ CREATE TABLE IF NOT EXISTS {FACT_BEVOELKERUNG} (
     geschlechterquotient  DOUBLE COMMENT 'KPI: einwohner_maennlich / einwohner_weiblich',
     wachstum_vorjahr_pct  DOUBLE COMMENT 'KPI: prozentuale Veraenderung ggue. Vorjahr'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 # fact_bauland: Baulandverkaeufe je Kreis und Jahr.
@@ -132,7 +141,7 @@ CREATE TABLE IF NOT EXISTS {FACT_BAULAND} (
     anteil_baureif_pct             DOUBLE COMMENT 'KPI: Anteil baureifes Land an Gesamtflaeche',
     durchschnittsfall_qm           DOUBLE COMMENT 'KPI: mittlere Grundstuecksgroesse je Veraeusserungsfall'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 # fact_klima: Durchschnittstemperatur je deutsche Klimastadt und Jahr.
@@ -144,7 +153,7 @@ CREATE TABLE IF NOT EXISTS {FACT_KLIMA} (
     avg_temperatur             DOUBLE COMMENT 'Durchschnittstemperatur in Grad Celsius (Jahresmittel)',
     temperatur_abweichung_grad DOUBLE COMMENT 'KPI: Abweichung vom langjaehrigen Referenzmittel (Klimawandel-Indikator)'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 # fact_gemeinde_stamm: Gemeinde-Stammdaten als Snapshot (Quelle hat keine Zeitreihe, daher kein jahr).
@@ -158,7 +167,7 @@ CREATE TABLE IF NOT EXISTS {FACT_GEMEINDE_STAMM} (
     area_km2             DOUBLE COMMENT 'Flaeche der Gemeinde in km2',
     einwohner_pro_km2    DOUBLE COMMENT 'KPI: Bevoelkerungsdichte'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 # fact_standortprofil_kpi: aggregierte Cross-Table-Faktentabelle fuer das Dashboard.
@@ -175,7 +184,7 @@ CREATE TABLE IF NOT EXISTS {FACT_STANDORTPROFIL_KPI} (
     verstaedterung_index              DOUBLE COMMENT 'Gemeinde-Dichte vs. Kreis-Durchschnittsdichte (fact_gemeinde_stamm x fact_bevoelkerung via dim_gemeinde)',
     standortattraktivitaets_score     DOUBLE COMMENT 'z-standardisierter Score aus Bevoelkerung + Bauland + Klima (alle Basisfakten)'
 )
-STORED AS PARQUET
+STORED BY ICEBERG TBLPROPERTIES('format-version'='2')
 """
 
 

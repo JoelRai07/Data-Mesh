@@ -31,7 +31,9 @@ info:
     Write-Audit-Publish-Pattern mit Incremental Loading (Wasserzeichen fuer
     Klimadaten, zeilengenauer Business-Key-Merge fuer Bauland/Bevoelkerung,
     Inhalts-Pruefsummen sonst; das Star-Schema wird bei Aenderungen komplett
-    neu berechnet). Details: README.md und docs/datenmodell_begruendung.md.
+    neu berechnet). Alle Tabellen sind Apache-Iceberg-Tabellen; jede
+    Veroeffentlichung ist ein atomarer Snapshot-Commit.
+    Details: README.md und docs/datenmodell_begruendung.md.
   owner: Gruppe 3 (DHBW Stuttgart, Data Mesh & Data Engineering)
   contact:
     name: Gruppe 3
@@ -63,11 +65,15 @@ terms:
       persistieren.
   limitations: |
     - Snapshot-Produkt: die dim_-/fact_-Tabellen werden bei geaenderten
-      Quellen komplett neu berechnet; es gibt keine Historisierung von
-      Laufstaenden.
-    - Waehrend eines laufenden Rebuilds koennen die dim_-/fact_-Tabellen
-      kurzzeitig leer oder teilbefuellt sein (TRUNCATE + INSERT,
-      s. README "Offene Punkte").
+      Quellen komplett neu berechnet; es gibt keine ZUGESICHERTE
+      Historisierung von Laufstaenden. (Technisch sind fruehere Staende als
+      Apache-Iceberg-Snapshots per Time Travel lesbar - Best Effort, kein
+      Vertragsbestandteil, Snapshots koennen expiren.)
+    - Jede Tabelle wird atomar veroeffentlicht (Iceberg-Snapshot-Commit):
+      Leser sehen nie eine leere oder teilbefuellte Tabelle. Zwischen den
+      Commits VERSCHIEDENER Tabellen eines Laufs liegen jedoch Sekunden -
+      wer Cross-Table-Konsistenz braucht, fragt ausserhalb des naechtlichen
+      Laufzeitfensters (00:00 Europe/Berlin) ab.
     - Klimadaten enden 2013 (Quelle Berkeley Earth): KPI-Werte ab 2014
       behandeln den Klima-Term neutral (0), s. fact_standortprofil_kpi.
     - Keine personenbezogenen Daten: ausschliesslich aggregierte amtliche

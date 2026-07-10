@@ -11,7 +11,7 @@ Begründung → Trade-off.**
 | Datei | Frage, die sie beantwortet |
 |---|---|
 | [README.md](../README.md) | „Wie ist das Projekt aufgebaut, wie führe ich es aus, wie lese ich den Code?" (Einstiegspunkt) |
-| [ADR.md](../ADR.md) | „Warum Apache Iceberg für den Bauland/Bevölkerung-Merge — und was hat das ersetzt?" (Vertiefung zu ADR-8) |
+| [ADR.md](../ADR.md) | „Warum läuft die komplette Pipeline auf Apache Iceberg — und wie ist es dazu gekommen?" (Vertiefung zu ADR-8, alle 4 Iterationen inkl. Live-Verifikation) |
 | [data_contract.yaml](data_contract.yaml) | „Was bekomme ich als **Konsument** des Datenprodukts und wie nutze ich es korrekt?" |
 | [datenmodell_begruendung.md](datenmodell_begruendung.md) | „Warum sieht das Datenmodell (Star-Schema) so aus?" (Deliverable 1) |
 | **dieses Dokument** | „Warum ist die Lösung insgesamt so gebaut — und was galt früher?" |
@@ -28,19 +28,20 @@ default.project_* ──(1) Staging──▶ gruppe3_staging_* ──(2) Audit�
                     impyla, inkrementell        impyla, Bereinigung + inkrementell         Spark, Star-Schema
 ```
 
-Write-Audit-Publish-Pattern (ADR-3), drei Lade-Strategien je Tabellenart
-(ADR-8), Transformationen in Spark (ADR-4), Orchestrierung über
-`run_pipeline.py` (ADR-9), täglicher Trigger per APScheduler (ADR-10),
+Write-Audit-Publish-Pattern (ADR-3), drei Lade-Strategien je Tabellenart auf
+durchgängig Apache-Iceberg-Tabellen (ADR-8, [ADR.md](../ADR.md)),
+Transformationen in Spark (ADR-4), Orchestrierung über `run_pipeline.py`
+(ADR-9), täglicher Trigger per APScheduler (ADR-10),
 Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 
 ---
 
 ## 2. Aktive ADRs (das gilt heute)
 
-### ADR-1 · Star-/Galaxy-Schema, denormalisiert, als Parquet
+### ADR-1 · Star-/Galaxy-Schema, denormalisiert, als Apache Iceberg *(Speicherformat aktualisiert 10.07.)*
 **Kontext:** 4 Quelltabellen, analytischer Use Case „Standortprofil-Dashboard" (OLAP, lesen/aggregieren).
-**Entscheidung:** 4 Dimensionen + 5 Fakten, denormalisiert (z. B. Bundesland direkt in `dim_kreis`), `STORED AS PARQUET`.
-**Warum:** OLAP liest Aggregate über viele Zeilen — Normalisierung (3. NF) erzwingt teure Joins; Parquet ist spaltenorientiert (Vorlesung 1, Folien 22–35).
+**Entscheidung:** 4 Dimensionen + 5 Fakten, denormalisiert (z. B. Bundesland direkt in `dim_kreis`), `STORED BY ICEBERG` (format-version 2; die Datendateien darunter bleiben spaltenorientiertes Parquet).
+**Warum:** OLAP liest Aggregate über viele Zeilen — Normalisierung (3. NF) erzwingt teure Joins; Parquet ist spaltenorientiert (Vorlesung 1, Folien 22–35). Iceberg ergänzt Snapshots: der Publish ersetzt jede Tabelle atomar, Konsumenten können per Time Travel frühere Stände lesen (s. [ADR.md](../ADR.md)).
 **Trade-off:** Redundanz in den Dimensionen — für ein Lese-System gewollt. Details: [datenmodell_begruendung.md](datenmodell_begruendung.md).
 
 ### ADR-2 · Regionalschlüssel + `dim_gemeinde` als verbindende Dimensionen
@@ -63,7 +64,7 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 
 ### ADR-5 · Hybrid-I/O: Spark liest per JDBC, impyla schreibt zurück
 **Kontext:** `df.write.jdbc()` gegen Impala scheitert (kein Impala-Dialekt in Spark; Treiber kann NULL-Parameter nicht binden — Stolpersteine 3+5).
-**Entscheidung:** Spark nur zum Lesen/Rechnen; Schreiben via `collect()` + impyla-`INSERT INTO … VALUES`-Batches (`overwrite_table()`), `TRUNCATE` separat per impyla.
+**Entscheidung:** Spark nur zum Lesen/Rechnen; Schreiben via `collect()` + impyla-`INSERT INTO … VALUES`-Batches (`overwrite_table()`) — seit 10.07. in eine Iceberg-Shadow-Tabelle, die per einem atomaren `INSERT OVERWRITE ziel SELECT * FROM shadow` veröffentlicht wird (Konsumenten sehen nie einen halb geschriebenen Stand, s. [ADR.md](../ADR.md) Iteration 4).
 **Warum:** Impala ist ein Lese-Motor, kein robustes JDBC-Schreibziel — bewusste Architekturentscheidung, kein Notbehelf. Details: [spark_stolpersteine.md](spark_stolpersteine.md).
 **Trade-off:** `collect()` holt Ergebnisse zum Treiber — bei unseren Zielgrößen (≤ ~15 k Zeilen) unkritisch, skaliert aber nicht beliebig.
 
@@ -80,15 +81,15 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 **Warum:** Deterministisch und erklärbar; der Distanz-Join scheiterte zunächst an zerstörten Koordinaten (s. Problem P3) und mehrdeutige Kurznamen („Frankfurt", „Oldenburg") wären beim Fuzzy-Match reine Raterei.
 **Trade-off:** 7 Städte bleiben unangebunden; über eine Korrekturliste nachschärfbar. **Achtung:** [datenmodell_begruendung.md](datenmodell_begruendung.md) beschreibt noch den alten Distanz-Ansatz → TODO.
 
-### ADR-8 · Incremental Loading mit drei Strategien + append-only State *(neu 06.07., Duc; Punkt 2 aktualisiert 07.07.)*
-**Kontext:** Der Scheduler läuft täglich; ein täglicher Full Load von 8,6 Mio. Klimazeilen wäre Verschwendung. Impala auf Parquet kennt **kein** UPDATE/DELETE/MERGE.
-**Entscheidung:** Je Tabellenart die passende Strategie (Vorlesung 3, Incremental-Loader-Pattern):
-  1. **Wasserzeichen** (`klimadaten`, echte Zeitreihe über `dt`): nur neuere Zeilen anhängen.
-  2. **Zeilengenauer Key-Merge** (`bauland`, `bevoelkerungzahlen` — verlässlicher Business-Key): FNV-Hash je Zeile, nur neue/geänderte/gelöschte Keys ersetzen. **Update 07.07.:** `gruppe3_audit_bauland`/`gruppe3_audit_bevoelkerungzahlen` laufen jetzt als **Apache-Iceberg**-Tabellen (statt Parquet) — echtes `DELETE`/`MERGE INTO` statt des früheren `CREATE TABLE … AS SELECT` + Rename-Swap + Drop. Details/Begründung/Verifikation: [ADR.md](../ADR.md).
-  3. **Inhalts-Prüfsumme** (`gemeinden` — kein NULL-freier Key): Full Refresh nur bei geänderter Prüfsumme.
-  Der Zustand liegt in `gruppe3_etl_state`/`_row_state` — **append-only** (jüngster Eintrag gewinnt), weil Zeilen-Updates in Impala/Parquet nicht existieren (gilt weiterhin für diese State-Tabellen selbst, die bleiben Parquet). Stufe 3 überspringt den ganzen Spark-Lauf, wenn kein Audit-Stand neuer ist als der letzte Ziel-Build.
+### ADR-8 · Incremental Loading mit drei Strategien, durchgängig auf Apache Iceberg *(neu 06.07., Duc; Iceberg-Merge 07.07.; komplette Iceberg-Pipeline + zustandsloser Merge 10.07., Duc)*
+**Kontext:** Der Scheduler läuft täglich; ein täglicher Full Load von 8,6 Mio. Klimazeilen wäre Verschwendung. Impala auf Parquet kennt **kein** UPDATE/DELETE/MERGE — auf Iceberg schon. *(Ein Zwischenstand vom 10.07. hatte alles auf Full Load zurückgebaut; noch am selben Tag revidiert, s. [ADR.md](../ADR.md) Iteration 4 — der Zwischenstand liegt auf dem Branch `backup/full-load-rueckbau-2026-07-10`.)*
+**Entscheidung:** Je Tabellenart die passende Strategie (Vorlesung 3, Incremental-Loader-Pattern); **alle Tabellen aller Schichten sind Iceberg** (format-version 2):
+  1. **Wasserzeichen** (`klimadaten`, echte Zeitreihe über `dt`): nur neuere Zeilen anhängen; Staging- und Audit-Tabelle per Iceberg-Transform `TRUNCATE(4, dt)` nach Jahr partitioniert → der Wasserzeichen-Filter ist ein Partition-Prune.
+  2. **Zeilengenauer Key-Merge** (`bauland`, `bevoelkerungzahlen` — verlässlicher Business-Key): billiger Prüfsummen-Vor-Check, bei Änderung direktes Iceberg `DELETE` + `MERGE INTO` gegen die Audit-Tabelle mit NULL-sicherem Spaltenvergleich (`t.col <=> src.col`) — die Audit-Tabelle selbst ist der Vergleichsstand, die frühere Zeilen-Hash-Historie (`gruppe3_etl_row_state`/`_changed_keys_tmp`) ist entfallen. Duplikat-Keys der Quelle (40 leere bauland-Zeilen, 2 leere bevoelkerung-Zeilen) werden per GROUP BY + MIN() deterministisch verdichtet. Details/Verifikation: [ADR.md](../ADR.md).
+  3. **Inhalts-Prüfsumme** (`gemeinden` — kein NULL-freier Key): ganze Tabelle serverseitig hashen; unverändert → Schritt übersprungen, geändert → Full Refresh als atomarer `INSERT OVERWRITE`-Snapshot.
+  Der Zustand liegt in `gruppe3_etl_state` — seit 10.07. ein echtes **Upsert** per `MERGE INTO` (eine Zeile je Stufe+Tabelle); die Historie liefern Iceberg-Snapshots (`DESCRIBE HISTORY`/Time Travel) statt Append-Only-Zeilen. Stufe 3 überspringt den ganzen Spark-Lauf, wenn kein Audit-Stand neuer ist als der letzte Ziel-Build, und published per atomarem Shadow-Swap.
 **Warum gemeinden nicht zeilengenau:** live getestet — NULL-behaftete Keys kollidierten, ein Reset-Folgelauf erkannte fälschlich Änderungen; bei ~11 k Zeilen ist die Prüfsumme robust und schnell genug.
-**Trade-off:** Deutlich mehr Komplexität + State-Tabellen. **Bekannter Bug:** das Wasserzeichen wird bei jedem Lauf neu geschrieben → der Skip von Stufe 3 greift im Komplettlauf nie (s. TODO, Fix ist ein Einzeiler).
+**Trade-off:** Mehr Komplexität als reines Full Load — dafür täglich fast kostenlose Läufe bei unveränderten Quellen und ein sauberer Iceberg-Showcase. Kein Compaction-/Snapshot-Expiry-Management (merge-on-read-Deltas sammeln sich über viele Läufe an) — bei dieser Datenmenge unkritisch, als Produktiv-Ausblick dokumentiert ([ADR.md](../ADR.md)).
 
 ### ADR-9 · `run_pipeline.py` als einziger Einstiegspunkt, fail-fast *(neu 06.07., Duc)*
 **Kontext:** Vorher vier einzelne Skript-Starts mit stiller Reihenfolge-Abhängigkeit (Zieltabellen mussten vor Stufe 3 existieren).
@@ -125,7 +126,8 @@ Konsumenten-Schnittstelle beschrieben im Data Contract (ADR-12).
 | **`spark.jars`** zum Einbinden des JDBC-Treibers | Löst unter Windows den Hadoop-Kopierpfad aus → braucht `winutils.exe` (Crash) | `spark.driver/executor.extraClassPath` (Stolperstein 2) |
 | **`df.write.jdbc()`** zum Zurückschreiben | Treiber kann NULL-Parameter nicht typisieren; Spark-Dialekt-Fallback erzeugt für Impala ungültige DDL (hat einmal eine Tabelle gedroppt!) | ADR-5 (impyla-Batches) |
 | **`spark.createDataFrame(python_liste)`** für Kleinst-Daten (dim_jahr) | Python↔JVM-Socket wird von VPN gestört („Accept timed out") | `F.explode(F.sequence(…))` rein JVM-seitig (Stolperstein 4) |
-| **Full Load in jeder Stufe, jeden Lauf** (`INSERT OVERWRITE` immer) | Täglicher Rewrite von 8,6 Mio. Zeilen ohne Not; Skips unmöglich | ADR-8 (Incremental, 06.07.) |
+| **Full Load in jeder Stufe, jeden Lauf** (`INSERT OVERWRITE` immer) | Täglicher Rewrite von 8,6 Mio. Zeilen ohne Not; Skips unmöglich. Ein Zwischenstand vom 10.07. hatte das kurzzeitig wieder eingeführt — noch am selben Tag revidiert (Branch `backup/full-load-rueckbau-2026-07-10`) | ADR-8 (Incremental, 06.07.; bestätigt 10.07.) |
+| **Append-only-State + Zeilen-Hash-Historie** (`gruppe3_etl_state` mit „jüngste Zeile gewinnt", `gruppe3_etl_row_state`/`_changed_keys_tmp` je Zeile) | Nur nötig, weil Parquet kein UPDATE/MERGE kann; seit alles Iceberg ist: State als `MERGE INTO`-Upsert, Zeilenvergleich direkt im MERGE (`<=>`), Historie über Iceberg-Snapshots. Der angebliche zweite Konsument der Zeilen-Historie („Incremental Scheduler") existierte nachweislich nie | ADR-8 / [ADR.md](../ADR.md) Iteration 4 (10.07.) |
 | **Vier einzelne Skript-Starts**, Docker-CMD = nur Stufe 3 | Stille Reihenfolge-Abhängigkeiten; Scheduler fütterte sich nie mit frischen Quelldaten | ADR-9 (`run_pipeline.py`) |
 | **`wohnraumdruck_index` als Verhältnis zweier Wachstumsraten** | Vorzeichen-Falle: −/− = +, das Vorzeichen spiegelte die Vorzeichen-Kombination, nicht den Druck (Ostallgäu-Beispiel) | Verhältnis von Bestandsgrößen (Einwohner je 1000 m² Bauland), nie negativ |
 | **3 von 4 Bauland-Merkmalen pivotiert** | Das 4. (amtlicher Kaufwert/qm) sollte als Vergleichswert dazu — stellte sich dann als ab Quelle zerstört heraus (P5) | Alle 4 pivotiert; Spalte im Contract als „nicht verwenden" markiert |
