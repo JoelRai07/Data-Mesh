@@ -2,7 +2,7 @@
 # DELIVERABLE 3: Data Contract
 # Beschreibt das Datenprodukt "Standortprofil deutscher Kreise" (Datenbank
 # gruppe3): welche Tabellen es gibt, was die Spalten bedeuten, wie man das
-# Produkt korrekt konsumiert - und ehrlich gemessene Datenqualitaet
+# Produkt korrekt konsumiert - und ehrlich gemessene Datenqualität
 # (alle Kennzahlen live gegen Impala gemessen, Stand: 2026-07-06).
 # =============================================================================
 dataContractSpecification: 1.1.0
@@ -13,22 +13,22 @@ info:
   status: active
   description: |
     Datenprodukt der Gruppe 3 (DHBW Stuttgart, Kurs "Data Mesh und Data
-    Engineering"). Verbindet vier amtliche/oeffentliche Quelldatensaetze
-    (Bevoelkerung, Baulandverkaeufe, Klimadaten, Gemeinde-Stammdaten) zu einem
-    analysefertigen Star-/Galaxy-Schema fuer den Use Case
+    Engineering"). Verbindet vier amtliche/öffentliche Quelldatensätze
+    (Bevölkerung, Baulandverkäufe, Klimadaten, Gemeinde-Stammdaten) zu einem
+    analysefertigen Star-/Galaxy-Schema für den Use Case
     "Standortprofil-Dashboard": Kreise vergleichbar machen hinsichtlich
-    Bevoelkerungsentwicklung, Bauland-/Wohnungsmarkt und Klimawandel-Exposition.
+    Bevölkerungsentwicklung, Bauland-/Wohnungsmarkt und Klimawandel-Exposition.
 
     Herkunft (Lineage): default.project_* (Rohdaten, nur lesend)
       -> gruppe3_staging_* (1:1-Kopie)
       -> gruppe3_audit_*   (bereinigt: Encoding-Korrekturen, Transliteration,
                             Koordinaten-Normalisierung, Filter Germany)
       -> gruppe3_dim_* / gruppe3_fact_* (dieses Datenprodukt).
-    Write-Audit-Publish-Pattern mit Incremental Loading (Wasserzeichen fuer
-    Klimadaten, zeilengenauer Business-Key-Merge fuer Bauland/Bevoelkerung,
-    Inhalts-Pruefsummen sonst; das Star-Schema wird bei Aenderungen komplett
+    Write-Audit-Publish-Pattern mit Incremental Loading (Wasserzeichen für
+    Klimadaten, zeilengenauer Business-Key-Merge für Bauland/Bevölkerung,
+    Inhalts-Prüfsummen sonst; das Star-Schema wird bei Änderungen komplett
     neu berechnet). Alle Tabellen sind Apache-Iceberg-Tabellen; jede
-    Veroeffentlichung ist ein atomarer Snapshot-Commit.
+    Veröffentlichung ist ein atomarer Snapshot-Commit.
     Details: README.md und docs/datenmodell_begruendung.md.
   owner: Gruppe 3 (DHBW Stuttgart, Data Mesh & Data Engineering)
   contact:
@@ -41,9 +41,9 @@ servers:
     host: dhbw-impala-master10.dhbw-cdp.lovivu.b0.cloudera.site
     port: 443
     description: |
-      Cloudera CDP / Impala der DHBW Stuttgart (HTTP-Transport ueber SSL,
-      Port 443). Authentifizierung per persoenlichem Workload-User (LDAP)
-      aus dem Cloudera-Portal - fuer "datacontract test" als
+      Cloudera CDP / Impala der DHBW Stuttgart (HTTP-Transport über SSL,
+      Port 443). Authentifizierung per persönlichem Workload-User (LDAP)
+      aus dem Cloudera-Portal - für "datacontract test" als
       Umgebungsvariablen DATACONTRACT_IMPALA_USERNAME /
       DATACONTRACT_IMPALA_PASSWORD setzen (keine Credentials im Contract).
       Zugriff nur aus dem DHBW-Kontext.
@@ -53,45 +53,45 @@ servers:
 terms:
   usage: |
     - Analytische Nutzung: Dashboards, Berichte, Ad-hoc-SQL, Data Science.
-    - Joins IMMER ueber die Schluessel kreis_id (amtlicher Regionalschluessel),
-      gemeinde_id, stadt_name und jahr - NICHT ueber kreis_name
+    - Joins IMMER über die Schlüssel kreis_id (amtlicher Regionalschlüssel),
+      gemeinde_id, stadt_name und jahr - NICHT über kreis_name
       (kreis_name ist NICHT eindeutig, s. quality bei gruppe3_dim_kreis).
     - Alle Textwerte sind ASCII-transliteriert (ae/oe/ue/ss): Konsumenten
-      muessen z.B. mit 'Muenchen' statt 'München' filtern.
+      müssen z.B. mit 'Muenchen' statt 'München' filtern.
     - gemeinde_id ist ein Surrogat und wird bei jedem Pipeline-Lauf neu
       vergeben: nur innerhalb EINES Datenstands joinen, niemals extern
       persistieren.
   limitations: |
-    - Snapshot-Produkt: die dim_-/fact_-Tabellen werden bei geaenderten
+    - Snapshot-Produkt: die dim_-/fact_-Tabellen werden bei geänderten
       Quellen komplett neu berechnet; es gibt keine ZUGESICHERTE
-      Historisierung von Laufstaenden. (Technisch sind fruehere Staende als
+      Historisierung von Laufständen. (Technisch sind frühere Stände als
       Apache-Iceberg-Snapshots per Time Travel lesbar - Best Effort, kein
-      Vertragsbestandteil, Snapshots koennen expiren.)
-    - Jede Tabelle wird atomar veroeffentlicht (Iceberg-Snapshot-Commit):
-      Leser sehen nie eine leere oder teilbefuellte Tabelle. Zwischen den
+      Vertragsbestandteil, Snapshots können expiren.)
+    - Jede Tabelle wird atomar veröffentlicht (Iceberg-Snapshot-Commit):
+      Leser sehen nie eine leere oder teilbefüllte Tabelle. Zwischen den
       Commits VERSCHIEDENER Tabellen eines Laufs liegen jedoch Sekunden -
-      wer Cross-Table-Konsistenz braucht, fragt ausserhalb des naechtlichen
+      wer Cross-Table-Konsistenz braucht, fragt außerhalb des nächtlichen
       Laufzeitfensters (00:00 Europe/Berlin) ab.
     - Klimadaten enden 2013 (Quelle Berkeley Earth): KPI-Werte ab 2014
       behandeln den Klima-Term neutral (0), s. fact_standortprofil_kpi.
-    - Keine personenbezogenen Daten: ausschliesslich aggregierte amtliche
+    - Keine personenbezogenen Daten: ausschließlich aggregierte amtliche
       Statistik auf Kreis-/Gemeindeebene.
   noticePeriod: P1M
 
 servicelevels:
   freshness:
     description: |
-      Batch, taeglich 00:00 Europe/Berlin per Scheduler (src/scheduler.py).
-      Die Pipeline laedt inkrementell (Wasserzeichen/Pruefsummen, s.
-      src/etl_state.py) und ueberspringt unveraenderte Quellen; das
-      Star-Schema wird nur bei Aenderungen neu berechnet. Quelldaten sind
-      statische Kursdaten - Aktualitaet ist daher durch die Quellen begrenzt.
+      Batch, täglich 00:00 Europe/Berlin per Scheduler (src/scheduler.py).
+      Die Pipeline lädt inkrementell (Wasserzeichen/Prüfsummen, s.
+      src/etl_state.py) und überspringt unveränderte Quellen; das
+      Star-Schema wird nur bei Änderungen neu berechnet. Quelldaten sind
+      statische Kursdaten - Aktualität ist daher durch die Quellen begrenzt.
   availability:
     description: Best effort (DHBW-Lernumgebung, keine Produktions-SLA).
   retention:
-    description: Nur der jeweils aktuelle Datenstand; keine historisierten Laufstaende.
+    description: Nur der jeweils aktuelle Datenstand; keine historisierten Laufstände.
   support:
-    description: Gruppe 3, waehrend der Vorlesungszeit des Kurses.
+    description: Gruppe 3, während der Vorlesungszeit des Kurses.
 
 models:
   # ---------------------------------------------------------------------------
@@ -99,16 +99,16 @@ models:
   # ---------------------------------------------------------------------------
   gruppe3_dim_kreis:
     description: >
-      Geografische Dimension auf Kreis-Ebene (472 Kreise/kreisfreie Staedte),
-      denormalisiert inkl. Bundesland. Enthaelt auch historische, inzwischen
-      aufgeloeste Kreise (Gebietsreformen), da die Fakten 1995-2024 abdecken.
+      Geografische Dimension auf Kreis-Ebene (472 Kreise/kreisfreie Städte),
+      denormalisiert inkl. Bundesland. Enthält auch historische, inzwischen
+      aufgelöste Kreise (Gebietsreformen), da die Fakten 1995-2024 abdecken.
     fields:
       kreis_id:
         type: string
         required: true
         unique: true
         primaryKey: true
-        description: Amtlicher Regionalschluessel, 5-stellig, z.B. '01001' (Flensburg).
+        description: Amtlicher Regionalschlüssel, 5-stellig, z.B. '01001' (Flensburg).
       kreis_name:
         type: string
         description: >
@@ -116,18 +116,18 @@ models:
           bei der Bereinigung entfernt) - dadurch NICHT eindeutig!
       bundesland_id:
         type: string
-        description: Erste 2 Stellen des Regionalschluessels, z.B. '01'.
+        description: Erste 2 Stellen des Regionalschlüssels, z.B. '01'.
       bundesland_name:
         type: string
         description: Bundesland, ASCII-transliteriert (z.B. Baden-Wuerttemberg).
     quality:
       - type: text
-        description: 472 Zeilen; kreis_id eindeutig und immer 5-stellig; bundesland_name immer gefuellt (Stand 2026-07-06).
+        description: 472 Zeilen; kreis_id eindeutig und immer 5-stellig; bundesland_name immer gefüllt (Stand 2026-07-06).
       - type: text
         description: >
           ACHTUNG: kreis_name ist mehrdeutig (30+ Namen mehrfach, z.B.
-          'Leipzig' 3x fuer 14365/14713/14729 = Stadt + Landkreis + Alt-Kreis).
-          Fuer Joins und Filter ausschliesslich kreis_id verwenden.
+          'Leipzig' 3x für 14365/14713/14729 = Stadt + Landkreis + Alt-Kreis).
+          Für Joins und Filter ausschließlich kreis_id verwenden.
 
   gruppe3_dim_jahr:
     description: Zeit-Dimension.
@@ -143,20 +143,20 @@ models:
         description: Jahrzehnt, z.B. 2020.
     quality:
       - type: text
-        description: 30 Zeilen, lueckenlos 1995-2024 (Stand 2026-07-06).
+        description: 30 Zeilen, lückenlos 1995-2024 (Stand 2026-07-06).
 
   gruppe3_dim_gemeinde:
     description: >
-      Bruecken-Dimension Gemeinde (10.947 Zeilen): verbindet die Kreis-Ebene
-      (Bevoelkerung/Bauland) mit der Stadt-Ebene der Klimadaten. Die
-      Kreis-Zuordnung erfolgt per Namens-Match und ist nicht vollstaendig.
+      Brücken-Dimension Gemeinde (10.947 Zeilen): verbindet die Kreis-Ebene
+      (Bevölkerung/Bauland) mit der Stadt-Ebene der Klimadaten. Die
+      Kreis-Zuordnung erfolgt per Namens-Match und ist nicht vollständig.
     fields:
       gemeinde_id:
         type: string
         required: true
         primaryKey: true
         description: >
-          Surrogat-Schluessel (Quelle hat keinen amtlichen Schluessel).
+          Surrogat-Schlüssel (Quelle hat keinen amtlichen Schlüssel).
           Wird je Pipeline-Lauf NEU vergeben - nicht extern persistieren.
       gemeinde_name:
         type: string
@@ -177,17 +177,17 @@ models:
         description: Breitengrad (Dezimalgrad).
       longitude:
         type: double
-        description: Laengengrad (Dezimalgrad).
+        description: Längengrad (Dezimalgrad).
     quality:
       - type: text
         description: >
           Kreis-Zuordnung: 10.675 von 10.947 Gemeinden haben eine kreis_id
           (97,5 % Coverage, 272 ohne Zuordnung) - bei Joins auf dim_kreis
-          LEFT JOIN verwenden bzw. NULL-Faelle einplanen (Stand 2026-07-06).
+          LEFT JOIN verwenden bzw. NULL-Fälle einplanen (Stand 2026-07-06).
 
   gruppe3_dim_klimastadt:
     description: >
-      Deutsche Staedte aus den Berkeley-Earth-Klimadaten (81 Staedte),
+      Deutsche Städte aus den Berkeley-Earth-Klimadaten (81 Städte),
       Namen ASCII-transliteriert und englische Exonyme auf deutsche
       Schreibweise gemappt (Munich -> Muenchen).
     fields:
@@ -201,11 +201,11 @@ models:
         description: Breitengrad (Dezimalgrad, aus Kompass-Format konvertiert).
       longitude:
         type: double
-        description: Laengengrad (Dezimalgrad, aus Kompass-Format konvertiert).
+        description: Längengrad (Dezimalgrad, aus Kompass-Format konvertiert).
     quality:
       - type: text
         description: >
-          81 Staedte; 74 davon lassen sich per Namens-Match einer Gemeinde in
+          81 Städte; 74 davon lassen sich per Namens-Match einer Gemeinde in
           dim_gemeinde zuordnen (Rest: mehrdeutige Kurznamen wie 'Frankfurt')
           (Stand 2026-07-06).
 
@@ -233,31 +233,31 @@ models:
         description: Einwohner gesamt (amtlicher Wert).
       einwohner_maennlich:
         type: bigint
-        description: Einwohner maennlich.
+        description: Einwohner männlich.
       einwohner_weiblich:
         type: bigint
         description: Einwohner weiblich.
       geschlechterquotient:
         type: double
-        description: KPI maennlich/weiblich; NULL wenn weiblich 0/unbekannt.
+        description: KPI männlich/weiblich; NULL wenn weiblich 0/unbekannt.
       wachstum_vorjahr_pct:
         type: double
         description: >
-          KPI Veraenderung ggue. Vorjahr in Prozent; NULL im jeweils ersten
+          KPI Veränderung ggü. Vorjahr in Prozent; NULL im jeweils ersten
           Jahr eines Kreises (kein Vorjahr vorhanden).
     quality:
       - type: text
         description: >
-          14.110 Zeilen; einwohner_insgesamt zu 100 % gefuellt;
+          14.110 Zeilen; einwohner_insgesamt zu 100 % gefüllt;
           geschlechterquotient 12.762 (90,4 %); wachstum_vorjahr_pct 12.364
-          (87,6 %) - fehlende Werte sind fachlich begruendet, kein Fehler
+          (87,6 %) - fehlende Werte sind fachlich begründet, kein Fehler
           (Stand 2026-07-06).
 
   gruppe3_fact_bauland:
     description: >
-      Baulandverkaeufe je Kreis und Jahr (4.720 Zeilen, 2015-2024), entstanden
+      Baulandverkäufe je Kreis und Jahr (4.720 Zeilen, 2015-2024), entstanden
       durch Pivot der Quelltabelle (1 Zeile je Merkmal -> 1 Spalte je Merkmal).
-      Amtliche Geheimhaltung: kleine Kreise/Jahre sind teilweise unterdrueckt.
+      Amtliche Geheimhaltung: kleine Kreise/Jahre sind teilweise unterdrückt.
     fields:
       kreis_id:
         type: string
@@ -271,35 +271,35 @@ models:
         description: FK auf dim_jahr.
       anzahl_veraeusserungsfaelle:
         type: bigint
-        description: Anzahl Veraeusserungsfaelle von Bauland (4.714 gefuellt).
+        description: Anzahl Veräußerungsfälle von Bauland (4.714 gefüllt).
       veraeusserte_flaeche_1000qm:
         type: bigint
         description: >
-          Veraeusserte Flaeche in 1000 m2 (4.662 gefuellt). ACHTUNG: 748
-          Zeilen haben den Wert 0 (Flaechen < 500 m2 runden amtlich auf 0),
+          Veräußerte Fläche in 1000 m2 (4.662 gefüllt). ACHTUNG: 748
+          Zeilen haben den Wert 0 (Flächen < 500 m2 runden amtlich auf 0),
           obwohl eine echte Kaufsumme vorliegt.
       kaufsumme_tsd_eur:
         type: bigint
-        description: Kaufsumme in Tsd. EUR (4.662 gefuellt).
+        description: Kaufsumme in Tsd. EUR (4.662 gefüllt).
       kaufwert_je_qm_eur:
         type: double
         description: >
           NICHT VERWENDEN. Der amtliche 'Durchschnittliche Kaufwert je qm'
-          wurde bereits beim Import der Rohdaten zerstoert (Dezimalwerte in
-          eine BIGINT-Spalte geladen): die Spalte enthaelt ausschliesslich
+          wurde bereits beim Import der Rohdaten zerstört (Dezimalwerte in
+          eine BIGINT-Spalte geladen): die Spalte enthält ausschließlich
           0 oder NULL - in der Quelle default.project_bauland genauso.
           Ersatz: preis_pro_qm_eur (selbst berechnet).
       preis_pro_qm_eur:
         type: double
         description: >
-          KPI kaufsumme/flaeche in EUR/m2 (3.912 gefuellt); NULL wenn
-          flaeche 0 oder unterdrueckt (Division durch 0 wird nicht berechnet).
+          KPI kaufsumme/fläche in EUR/m2 (3.912 gefüllt); NULL wenn
+          fläche 0 oder unterdrückt (Division durch 0 wird nicht berechnet).
       anteil_baureif_pct:
         type: double
-        description: KPI Anteil baureifes Land an der Flaeche (3.584 gefuellt).
+        description: KPI Anteil baureifes Land an der Fläche (3.584 gefüllt).
       durchschnittsfall_qm:
         type: double
-        description: KPI mittlere Grundstuecksgroesse je Fall (3.914 gefuellt).
+        description: KPI mittlere Grundstücksgröße je Fall (3.914 gefüllt).
     quality:
       - type: sql
         description: Kein Kreis+Jahr doppelt (Pivot-Korn).
@@ -317,7 +317,7 @@ models:
   gruppe3_fact_klima:
     description: >
       Jahresmittel-Temperatur je deutscher Klimastadt (1.539 Zeilen,
-      81 Staedte, NUR 1995-2013 - die Quelle Berkeley Earth endet 2013).
+      81 Städte, NUR 1995-2013 - die Quelle Berkeley Earth endet 2013).
     fields:
       stadt_name:
         type: string
@@ -335,7 +335,7 @@ models:
       temperatur_abweichung_grad:
         type: double
         description: >
-          Abweichung vom langjaehrigen Referenzmittel derselben Stadt
+          Abweichung vom langjährigen Referenzmittel derselben Stadt
           (Referenzperiode 1961-1990, WMO-Standard) - Klimawandel-Indikator.
     quality:
       - type: sql
@@ -358,7 +358,7 @@ models:
         description: Einwohner gesamt (Snapshot der Quelle).
       einwohner_maennlich:
         type: bigint
-        description: Einwohner maennlich (Snapshot).
+        description: Einwohner männlich (Snapshot).
       einwohner_weiblich:
         type: bigint
         description: Einwohner weiblich (Snapshot).
@@ -367,10 +367,10 @@ models:
         description: KPI Frauenanteil in Prozent.
       area_km2:
         type: double
-        description: Flaeche der Gemeinde in km2.
+        description: Fläche der Gemeinde in km2.
       einwohner_pro_km2:
         type: double
-        description: KPI Bevoelkerungsdichte (selbst berechnet aus total/area).
+        description: KPI Bevölkerungsdichte (selbst berechnet aus total/area).
     quality:
       - type: sql
         description: Kein gemeinde_id doppelt (Snapshot-Korn).
@@ -384,18 +384,18 @@ models:
         description: >
           Quell-Duplikate mit gleichem Namen+PLZ werden vor dem Join gegen
           dim_gemeinde dedupliziert, damit der Snapshot genau eine Zeile je
-          gemeinde_id enthaelt (Stand 2026-07-06).
+          gemeinde_id enthält (Stand 2026-07-06).
 
   # ---------------------------------------------------------------------------
-  # AGGREGIERTER KPI-FAKT (das "Dashboard-fertige" Herzstueck)
+  # AGGREGIERTER KPI-FAKT (das "Dashboard-fertige" Herzstück)
   # ---------------------------------------------------------------------------
   gruppe3_fact_standortprofil_kpi:
     description: >
       Vorverdichtete Cross-Table-KPIs je Kreis und Jahr (4.099 Zeilen,
-      2015-2024): verbindet Bevoelkerung, Bauland, Klima (ueber die
-      Gemeinde-Bruecke) und Gemeinde-Dichte, damit ein Dashboard ohne
+      2015-2024): verbindet Bevölkerung, Bauland, Klima (über die
+      Gemeinde-Brücke) und Gemeinde-Dichte, damit ein Dashboard ohne
       Mehrfach-Joins auskommt. NULL bedeutet immer: mindestens eine
-      Eingangsgroesse fehlt (amtlich unterdrueckt / kein Vorjahr / kein
+      Eingangsgröße fehlt (amtlich unterdrückt / kein Vorjahr / kein
       Klima-Match) - NULL ist hier eine dokumentierte Aussage, kein Fehler.
     fields:
       kreis_id:
@@ -411,32 +411,32 @@ models:
       wohnraumdruck_index:
         type: double
         description: >
-          Einwohner je 1000 m2 neu veraeusserter Baulandflaeche (nie negativ,
-          hoeher = mehr Druck). 3.914 von 4.099 gefuellt.
+          Einwohner je 1000 m2 neu veräußerter Baulandfläche (nie negativ,
+          höher = mehr Druck). 3.914 von 4.099 gefüllt.
       baulandpreis_pro_kopf_eur:
         type: double
-        description: Kaufsumme (EUR) pro Einwohner. 3.929 gefuellt.
+        description: Kaufsumme (EUR) pro Einwohner. 3.929 gefüllt.
       freiflaeche_pro_einwohner_qm:
         type: double
-        description: Neu veraeusserte Flaeche (m2) pro Einwohner. 3.929 gefuellt.
+        description: Neu veräußerte Fläche (m2) pro Einwohner. 3.929 gefüllt.
       klima_angepasstes_wohnraumrisiko:
         type: double
         description: >
-          wohnraumdruck_index * (1 + temperatur_abweichung/10). 3.914 gefuellt.
+          wohnraumdruck_index * (1 + temperatur_abweichung/10). 3.914 gefüllt.
           ACHTUNG: Klimadaten enden 2013 - ab 2014 geht der Klima-Term
           neutral (0) ein, der Wert entspricht dann dem wohnraumdruck_index.
       verstaedterung_index:
         type: double
         description: >
           Max. Gemeinde-Dichte / mittlere Gemeinde-Dichte des Kreises
-          (hoeher = ein dominantes Zentrum). 3.430 gefuellt.
+          (höher = ein dominantes Zentrum). 3.430 gefüllt.
       standortattraktivitaets_score:
         type: double
         description: >
-          Je Jahr z-standardisierter Score aus Bevoelkerungswachstum (+),
+          Je Jahr z-standardisierter Score aus Bevölkerungswachstum (+),
           Baulandpreis (-) und Klima-Abweichung (-). Nur INNERHALB eines
           Jahres vergleichbar; negative Werte sind normal
-          (= unterdurchschnittlich attraktiv). 3.911 gefuellt.
+          (= unterdurchschnittlich attraktiv). 3.911 gefüllt.
     quality:
       - type: sql
         description: Score-Spalte darf nie wieder komplett leer sein (s. docs/Probleme.md, Fallstudie 1).
@@ -456,7 +456,7 @@ models:
 # =============================================================================
 examples:
   - type: sql
-    description: Top-10 Kreise mit dem hoechsten Wohnraumdruck 2023.
+    description: Top-10 Kreise mit dem höchsten Wohnraumdruck 2023.
     data: |
       SELECT k.kreis_id, k.kreis_name, k.bundesland_name, f.wohnraumdruck_index
       FROM gruppe3.gruppe3_fact_standortprofil_kpi f
@@ -465,7 +465,7 @@ examples:
       ORDER BY f.wohnraumdruck_index DESC
       LIMIT 10;
   - type: sql
-    description: Bevoelkerungsentwicklung eines Kreises als Zeitreihe (Beispiel Flensburg).
+    description: Bevölkerungsentwicklung eines Kreises als Zeitreihe (Beispiel Flensburg).
     data: |
       SELECT jahr, einwohner_insgesamt, wachstum_vorjahr_pct
       FROM gruppe3.gruppe3_fact_bevoelkerung
@@ -479,7 +479,7 @@ examples:
       WHERE stadt_name = 'Muenchen'
       ORDER BY jahr;
   - type: sql
-    description: Attraktivitaets-Ranking eines Jahres (z-Score, nur innerhalb eines Jahres vergleichen).
+    description: Attraktivitäts-Ranking eines Jahres (z-Score, nur innerhalb eines Jahres vergleichen).
     data: |
       SELECT k.kreis_name, k.bundesland_name, f.standortattraktivitaets_score
       FROM gruppe3.gruppe3_fact_standortprofil_kpi f

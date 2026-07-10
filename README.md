@@ -392,7 +392,7 @@ kreis_id:
   required: true      # nie NULL
   unique: true        # keine Duplikate
   primaryKey: true
-  description: Amtlicher Regionalschluessel, 5-stellig, z.B. '01001' (Flensburg).
+  description: Amtlicher Regionalschlüssel, 5-stellig, z.B. '01001' (Flensburg).
 ```
 
 | Bestandteil | CLI-Import | Manuell ergänzt |
