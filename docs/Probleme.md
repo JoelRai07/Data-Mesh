@@ -20,6 +20,7 @@ Data Contract dokumentiert) und die noch offenen Punkte.
 | P7 | Cloudera-JDBC „Error converting value to double" (`per_km2`, `area_km2`) | Spalten als STRING lesen (`customSchema`) bzw. Dichte selbst berechnen | [Fallstudie 3](#stolperstein-7-error-converting-value-to-double-p7) |
 | P8 | Zeilengenauer Merge für `gemeinden` erkannte Phantom-Änderungen | NULL-Keys kollabieren in `CONCAT_WS`; kein stabiler NULL-freier Schlüssel → bewusst Tabellen-Prüfsumme | [ADR-8](ADR.md) |
 | P9 | Spark scheitert an System-JDK ≥ 23/24 (`getSubject is not supported`) | `JAVA_HOME_JDK17` vor dem `pyspark`-Import selbst setzen | [Fallstudie 3](#stolperstein-1-keinfalsches-java-p9), [ADR-16](ADR.md) |
+| P10 | Neuer Airflow-DAG in CDE startete pausiert; der Pause-Toggle in der CDE-Airflow-UI ließ sich nicht zuverlässig bedienen | `is_paused_upon_creation=False` im DAG — er wird direkt aktiv erzeugt, ohne UI-Interaktion | [ADR-17](ADR.md) |
 
 ---
 
@@ -205,7 +206,7 @@ Regelfall, kein Randfall.
 
 **Lösung:** Kompletter Verzicht auf `df.write.jdbc()`. `overwrite_table()`
 holt die Zeilen per `df.collect()` und baut daraus normalen SQL-Text
-(`INSERT INTO … VALUES (…), (…)`, Batches à 500), den impyla ausführt — keine
+(`INSERT INTO … VALUES (…), (…)`, Batches à 2000), den impyla ausführt — keine
 Parameter-Bindung, keine Typ-Probleme. `NaN`/`Infinity` werden dabei zu NULL
 (Impala akzeptiert diese Literale nicht).
 
@@ -264,11 +265,15 @@ Kurzfassung — vollständige Tabelle in [ADR.md → Abgelöste Entscheidungen](
   (Einwohner je 1000 m² Bauland), nie negativ.
 - **Koordinaten-Distanz-Join** Gemeinde→nächste Klimastadt: scheiterte erst an
   P3, danach bewusst durch den deterministischen Namens-Join ersetzt ([ADR-7](ADR.md)).
-- **Iceberg-Merge-Vereinfachung zurückgerollt:** Ein Refactoring ersetzte die
-  Row-Hash-Historie (`gruppe3_etl_row_state`) testweise durch direkten
-  SQL-Vergleich — und übersah, dass der Incremental-Scheduler denselben State
-  konsumiert. Lehre: *eine Vereinfachung, die nur den gerade bearbeiteten Code
-  liest, kann Konsumenten desselben States übersehen* ([ADR-13](ADR.md)).
+- **Iceberg-Merge: Vereinfachung → Rollback → Rollback des Rollbacks:** Ein
+  Refactoring ersetzte die Row-Hash-Historie (`gruppe3_etl_row_state`) durch
+  direkten SQL-Vergleich; das wurde zurückgerollt, weil angeblich ein
+  „Incremental Scheduler" die Historie konsumiere. Beim Nachprüfen erwies
+  sich diese Behauptung als falsch (kein Code außerhalb von Stufe 2 hat die
+  Tabellen je gelesen) — seit dem 10.07. ist der Merge endgültig zustandslos,
+  die Hash-Tabellen sind gelöscht. Lehre: *Konsumenten eines States mit
+  Dateiname/Zeile benennen — was sich nicht benennen lässt, existiert mit
+  hoher Wahrscheinlichkeit nicht* ([ADR-13](ADR.md)).
 
 ---
 
@@ -309,11 +314,13 @@ Diese Punkte sind **keine Bugs**, sondern Eigenschaften der Quelldaten — im
 - **Data-Contract-Härtung (Kür):** weitere ausführbare `quality`-SQLs
   (Row-Count-Minima, FK-Integrität, Composite-Key-Checks für
   `fact_bevoelkerung`/`fact_klima`).
-- **Iceberg-Wartung (Ausblick):** Die Iceberg-Audit-Tabellen laufen
+- **Iceberg-Wartung (Ausblick):** Die Iceberg-Tabellen laufen
   merge-on-read — über sehr viele Läufe sammeln sich Delete-Dateien; bei
   dieser Datenmenge unkritisch, produktiv gehörte Compaction/Snapshot-Expiry
   dazu ([ADR-13](ADR.md)).
-- **Airflow/Cloudera DE (Ausblick):** produktiv gehörte der Scheduler auf die
-  Plattform (Backfilling, DAG, Monitoring) statt auf einen Laptop — bewusster
-  Trade-off von [ADR-10](ADR.md), in der Präsentation als Ausblick nennen.
+- **Airflow/Cloudera DE:** erledigt (11.07.2026) — der produktive Scheduler
+  läuft jetzt als Airflow-DAG in Cloudera Data Engineering ([ADR-17](ADR.md),
+  Deploy-Anleitung: [README → CDE-Deployment](../README.md)); offen ist nur
+  noch die dortige Abnahme-Checkliste (Einzel-Job-Läufe, erzwungener
+  Stufe-3-Build mit Zeilenzahl-Abgleich, kompletter DAG-Lauf mit 32 Checks).
 - **Kosmetik:** die beiden harmlosen Warnungen oben.

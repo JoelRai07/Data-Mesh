@@ -1,6 +1,0 @@
-# Python-Environment fuer die CDE-Jobs (Pendant zu requirements.txt, aber:
-#  - OHNE pyspark   -> stellt der CDE-Spark-Runtime selbst
-#  - OHNE APScheduler -> Scheduling uebernimmt der Airflow-DAG
-impyla==0.24.0
-python-dotenv==1.2.2
-PyYAML==6.0.2

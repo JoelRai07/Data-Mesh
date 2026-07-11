@@ -22,7 +22,7 @@ eigentlichen Transformationen (Unpivot, Pivot, Window-Funktionen) laufen in
 | Datei | Frage, die sie beantwortet |
 |---|---|
 | **README.md** (diese Datei) | Was ist das Projekt, wie funktioniert es, wie führe ich es aus, warum sieht das Datenmodell so aus? |
-| [docs/ADR.md](docs/ADR.md) | Warum ist alles so gebaut — alle Architektur-Entscheidungen (ADR-1..16) + abgelöste Entscheidungen |
+| [docs/ADR.md](docs/ADR.md) | Warum ist alles so gebaut — alle Architektur-Entscheidungen (ADR-1..17) + abgelöste Entscheidungen |
 | [docs/Probleme.md](docs/Probleme.md) | Alle Probleme: gelöst (mit Fallstudien), nicht behebbar (dokumentiert), offen |
 
 Die vier abgegebenen Arbeitsergebnisse:
@@ -114,15 +114,14 @@ Quelltabellen in `default.*` (kein Iceberg → kein verlässlicher
 Metadaten-Fingerprint → Prüfsummen-Scan als Fallback).
 
 Die fachlichen Begründungen stehen ausführlich in den Modul-Docstrings der
-jeweiligen Skripte; die Iceberg-Entscheidung inkl. aller live verifizierten
-Iterationen in [ADR.md](ADR.md).
+jeweiligen Skripte; die Iceberg-Entscheidung inkl. der live verifizierten
+Verifikation in [docs/ADR.md](docs/ADR.md) (ADR-13).
 
 ## Projektstruktur
 
 ```
 Data-Mesh/
 ├── README.md                        # Diese Datei
-├── ADR.md                           # Apache-Iceberg-Entscheidung (alle Iterationen, live verifiziert)
 ├── requirements.txt                 # Python-Abhängigkeiten (impyla, pyspark, APScheduler, dotenv, PyYAML)
 ├── .env.example                     # Vorlage für Zugangsdaten → kopieren nach .env
 ├── .env                             # Echte Zugangsdaten (NICHT eingecheckt)
@@ -141,7 +140,6 @@ Data-Mesh/
 │   ├── etl_state.py                 # Incremental-Loading-Zustand (Iceberg-Upsert) + Iceberg-Helfer
 │   ├── scheduler.py                 # Täglicher Batch-Lauf um 00:00 (APScheduler)
 │   └── utils/
-│       ├── inspect_tables.py        # Zeigt Schema + Zeilenzahl der Rohtabellen
 │       ├── reset_database.py        # Löscht ALLE gruppe3-Tabellen (Reset für End-to-End-Tests, fragt nach)
 │       ├── german_cities.txt        # Referenzliste Städte/Orte (für Encoding-Auflösung in Stufe 2)
 │       ├── german_regions.txt       # Referenzliste Landkreise + kreisfreie Städte
@@ -149,18 +147,17 @@ Data-Mesh/
 │       └── ImpalaJDBC42.jar         # JDBC-Treiber für Spark (lokal bereitzustellen, s. Einrichtung)
 │
 ├── cde/
-│   ├── pipeline_dag.py              # Airflow-DAG für Cloudera Data Engineering (5 Stufen als Tasks)
-│   ├── requirements-cde.txt         # Python-Env für CDE-Jobs (ohne pyspark/APScheduler)
-│   └── README.md                    # Deploy-Anleitung CDE (Resources, Jobs, DAG, Verifikation)
+│   └── pipeline_dag.py              # Airflow-DAG für Cloudera Data Engineering (5 Stufen als Tasks; live seit 11.07.2026)
 │
 ├── data/
 │   ├── data_contract.yaml           # DELIVERABLE 3: Data Contract (Schema, Nutzung, Qualität)
 │   └── output_port_ddl.sql          # SQL-Basis für datacontract import sql
 │
 └── docs/
-    ├── ADR.md                       # ALLE Architektur-Entscheidungen (ADR-1..16) + abgelöste
+    ├── ADR.md                       # ALLE Architektur-Entscheidungen (ADR-1..17) + abgelöste
     ├── Probleme.md                  # ALLE Probleme: gelöst / nicht behebbar / offen
-    └── Portfolioprüfung.pdf         # Aufgabenstellung
+    ├── pictures/                    # Architektur-Diagramme (drawio: WAP-Pipeline, Star-Schema, Contract-Gate)
+    └── portfolio/Portfolioprüfung.pdf   # Aufgabenstellung
 ```
 
 ## Wie liest man den Code?
@@ -277,7 +274,7 @@ Alle DDLs nutzen `CREATE TABLE IF NOT EXISTS`; die Befüllung ist inkrementell
 (Wasserzeichen-Append, Key-Merge bzw. `INSERT OVERWRITE` nur bei echter
 Änderung). Mehrfaches Ausführen erzeugt keine Duplikate — ein zweiter Lauf
 direkt nach dem ersten meldet überall „übersprungen" (End-to-End verifiziert,
-s. [Stand](#stand-verifiziert-09072026)).
+s. [Stand](#stand)).
 
 ## Einrichtung (einmalig)
 
@@ -310,14 +307,13 @@ fremden DB).
 Die Stufen 1+2 einzeln und alle `utils/`-Skripte brauchen **kein** Java —
 nur Python + `.env`.
 
-**Einmalig bei bestehenden Tabellen aus einem älteren (Parquet-)Stand:**
-`.venv/Scripts/python.exe src/utils/migrate_to_iceberg.py` migriert alle
-`gruppe3`-Tabellen verlustfrei zu Iceberg (Zeilenzahl-Verifikation vor jedem
-Tausch, idempotent — bereits am 10.07.2026 gegen die echte Gruppen-Datenbank
-ausgeführt). Die Pipeline bricht mit einer klaren Fehlermeldung ab, falls sie
-auf eine noch nicht migrierte Tabelle trifft. Bei einer frisch zurückgesetzten
-Datenbank ist keine Migration nötig — alle Tabellen werden direkt als Iceberg
-angelegt.
+**Parquet→Iceberg-Migration (erledigt, historisch):** Die einmalige Migration
+aller `gruppe3`-Bestandstabellen zu Iceberg wurde am 10.07.2026 gegen die
+echte Gruppen-Datenbank ausgeführt (Zeilenzahl-Verifikation vor jedem Tausch);
+das Migrationsskript wurde danach aus dem Repo entfernt. Die Pipeline bricht
+mit einer klaren Fehlermeldung ab, falls sie doch auf eine nicht migrierte
+Tabelle trifft. Bei einer frisch zurückgesetzten Datenbank ist keine Migration
+nötig — alle Tabellen werden direkt als Iceberg angelegt.
 
 ## Zwei Betriebsarten: lokal (Docker) und Cloudera Data Engineering
 
@@ -327,13 +323,179 @@ Die Pipeline läuft mit **demselben Code unter `src/`** in zwei Umgebungen:
   bzw. die `.venv`-Aufrufe unten. Spark läuft außerhalb des Clusters und
   erreicht die Daten über den Impala-JDBC-Endpoint
   (`SPARK_IO_MODE=jdbc`, Default — braucht das JDBC-Jar, s. Einrichtung).
-- **CDE / Airflow** (produktiver Scheduler): Ein Airflow-DAG orchestriert die
-  fünf Stufen als CDE-Jobs; Stufe 3 liest/schreibt Iceberg dort **nativ**
-  über den Katalog (`SPARK_IO_MODE=catalog` — kein JDBC-Jar, kein
-  collect()-Umweg). Setup und Verifikation: [cde/README.md](cde/README.md).
+- **CDE / Airflow** (produktiver Scheduler — **live seit 11.07.2026**): Der
+  Airflow-DAG `gruppe3_data_mesh_pipeline` orchestriert die fünf Stufen als
+  CDE-Jobs und läuft täglich 05:00 UTC im Virtual Cluster (Monitoring,
+  Retries, Wiederaufsetzen ab der gescheiterten Stufe in der Airflow-UI);
+  Stufe 3 liest/schreibt Iceberg dort **nativ** über den Katalog
+  (`SPARK_IO_MODE=catalog` — kein JDBC-Jar, kein collect()-Umweg).
+  Setup, Deploy-Hinweise und Abnahme-Checkliste: s. direkt unten.
 
 Beide Welten teilen sich `gruppe3_etl_state` (Fingerprint-Skip funktioniert
-über die Grenze hinweg); nur nicht beide **Scheduler** gleichzeitig betreiben.
+über die Grenze hinweg); nur nicht beide **Scheduler** gleichzeitig betreiben:
+seit der DAG aktiv ist, den lokalen `scheduler`-Container nicht mehr starten —
+manuelle lokale Läufe (`docker compose run --rm pipeline`) bleiben dank
+Idempotenz jederzeit möglich.
+
+| | Lokal (Docker) | CDE |
+|---|---|---|
+| Taktgeber | `docker compose run pipeline` bzw. `scheduler.py` | Airflow-DAG ([cde/pipeline_dag.py](cde/pipeline_dag.py)) |
+| Stufen 0/1/2/4 | impyla gegen Impala-Endpoint | **identisch** (impyla gegen Impala-Endpoint) |
+| Stufe 3 Spark-I/O | `SPARK_IO_MODE=jdbc` (Default): JDBC-Jar + collect/VALUES/Shadow | `SPARK_IO_MODE=catalog`: native Iceberg-Reads/-Writes, kein Treiber-Jar |
+| Zugangsdaten | `.env` | Env-Vars in der Job-Config (s. Deployment, Schritt 3) |
+| ETL-State / Fingerprint-Skip | `gruppe3_etl_state` | **dieselbe Tabelle** — beide Welten teilen sich den Zustand |
+
+### CDE-Deployment (einmalig, CDE CLI)
+
+Voraussetzung: die CDE CLI ist gegen den Virtual Cluster der Gruppe
+konfiguriert; alle Kommandos aus dem Repo-Root (`Data-Mesh/`) ausführen.
+Dieses Setup ist am 11.07.2026 genau so ausgeführt worden — die Pipeline
+läuft seitdem im VC; die Schritte bleiben zur Reproduktion dokumentiert.
+
+**1. Code als Files-Resource hochladen.** Die Verzeichnisstruktur muss
+erhalten bleiben (`contract_check.py` erwartet `../data/data_contract.yaml`
+relativ zu `src/`):
+
+```bash
+cde resource create --name gruppe3-pipeline-code --type files
+cde resource upload --name gruppe3-pipeline-code \
+  --local-path src --resource-path src
+cde resource upload --name gruppe3-pipeline-code \
+  --local-path data/data_contract.yaml --resource-path data/data_contract.yaml
+```
+
+Das JDBC-Jar (`src/utils/ImpalaJDBC42.jar`) wird **nicht** gebraucht und
+nicht hochgeladen — im Katalog-Modus liest Spark den Metastore direkt.
+
+**2. Python-Environment anlegen.** Die CDE-Jobs brauchen nur drei Pakete —
+**ohne** `pyspark` (stellt die CDE-Spark-Runtime selbst) und **ohne**
+`APScheduler` (Scheduling übernimmt der Airflow-DAG):
+
+```bash
+printf 'impyla==0.24.0\npython-dotenv==1.2.2\nPyYAML==6.0.2\n' > requirements-cde.txt
+
+cde resource create --name gruppe3-python-env --type python-env
+cde resource upload --name gruppe3-python-env \
+  --local-path requirements-cde.txt --resource-path requirements.txt
+```
+
+(Danach den Build-Status abwarten: `cde resource describe --name gruppe3-python-env`.)
+
+**3. Die fünf Stufen-Jobs anlegen.** Alle Stufen laufen als Spark-Jobs mit
+den vorhandenen Modulen als Application-File — die Stufen 0/1/2/4 nutzen
+Spark dabei gar nicht (reine Driver-Python-Skripte mit impyla), deshalb
+bekommen sie minimale Ressourcen. Die Zugangsdaten gehen als Driver-Env-Vars
+in die Job-Config (`spark.kubernetes.driverEnv.*` — CDE führt den Driver als
+Kubernetes-Pod aus):
+
+```bash
+# Gemeinsame Env-Vars fuer alle Jobs (Werte aus eurer .env):
+ENVS="--conf spark.kubernetes.driverEnv.IMPALA_HOST=<host> \
+ --conf spark.kubernetes.driverEnv.IMPALA_PORT=443 \
+ --conf spark.kubernetes.driverEnv.IMPALA_HTTP_PATH=<http-path> \
+ --conf spark.kubernetes.driverEnv.IMPALA_USER=<workload-user> \
+ --conf spark.kubernetes.driverEnv.IMPALA_PASSWORD=<workload-passwort> \
+ --conf spark.kubernetes.driverEnv.DATABASE=gruppe3 \
+ --conf spark.kubernetes.driverEnv.PREFIX=gruppe3_"
+
+cde job create --name gruppe3-stufe0-datenmodell --type spark \
+  --application-file src/create_datamodel.py \
+  --mount-1-resource gruppe3-pipeline-code \
+  --python-env-resource-name gruppe3-python-env \
+  --driver-cores 1 --driver-memory 1g --executor-cores 1 --executor-memory 1g --num-executors 1 \
+  $ENVS
+
+cde job create --name gruppe3-stufe1-staging --type spark \
+  --application-file src/pipeline_default_to_staging.py \
+  --mount-1-resource gruppe3-pipeline-code \
+  --python-env-resource-name gruppe3-python-env \
+  --driver-cores 1 --driver-memory 1g --executor-cores 1 --executor-memory 1g --num-executors 1 \
+  $ENVS
+
+cde job create --name gruppe3-stufe2-audit --type spark \
+  --application-file src/pipeline_staging_to_audit.py \
+  --mount-1-resource gruppe3-pipeline-code \
+  --python-env-resource-name gruppe3-python-env \
+  --driver-cores 1 --driver-memory 1g --executor-cores 1 --executor-memory 1g --num-executors 1 \
+  $ENVS
+
+# Stufe 3: der einzige echte Spark-Job. SPARK_IO_MODE=catalog schaltet die
+# native Iceberg-I/O-Schicht ein (s. src/pipeline_audit_to_target.py).
+cde job create --name gruppe3-stufe3-target --type spark \
+  --application-file src/pipeline_audit_to_target.py \
+  --mount-1-resource gruppe3-pipeline-code \
+  --python-env-resource-name gruppe3-python-env \
+  --driver-cores 2 --driver-memory 4g --executor-cores 2 --executor-memory 4g --num-executors 2 \
+  --conf spark.kubernetes.driverEnv.SPARK_IO_MODE=catalog \
+  $ENVS
+
+cde job create --name gruppe3-stufe4-contract --type spark \
+  --application-file src/contract_check.py \
+  --mount-1-resource gruppe3-pipeline-code \
+  --python-env-resource-name gruppe3-python-env \
+  --driver-cores 1 --driver-memory 1g --executor-cores 1 --executor-memory 1g --num-executors 1 \
+  $ENVS
+```
+
+**Iceberg-Konfiguration Stufe 3:** In CDE-Virtual-Clustern mit
+Iceberg-Support (Spark 3) sind die nötigen Katalog-Einstellungen
+(`spark.sql.extensions`, `spark.sql.catalog.spark_catalog`) bereits
+vorkonfiguriert. Falls euer VC das nicht mitbringt (erkennbar an
+"Table ... is not an Iceberg table" / fehlgeschlagenem `INSERT OVERWRITE`),
+dem Stufe-3-Job zusätzlich mitgeben:
+
+```
+--conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+--conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+--conf spark.sql.catalog.spark_catalog.type=hive
+```
+
+**4. DAG deployen:**
+
+```bash
+cde resource create --name gruppe3-dag --type files
+cde resource upload --name gruppe3-dag \
+  --local-path cde/pipeline_dag.py --resource-path pipeline_dag.py
+
+cde job create --name gruppe3-pipeline-orchestrierung --type airflow \
+  --dag-file pipeline_dag.py \
+  --mount-1-resource gruppe3-dag
+```
+
+Der DAG läuft dann täglich 05:00 UTC (änderbar in
+[cde/pipeline_dag.py](cde/pipeline_dag.py), `schedule_interval`) und ist in
+der Airflow-UI des Virtual Clusters sichtbar (Monitoring, Retries, manuelles
+Triggern, Wiederaufsetzen ab einer gescheiterten Stufe). Er startet dank
+`is_paused_upon_creation=False` direkt **aktiv** — nötig, weil sich der
+Pause-Toggle in der CDE-Airflow-UI nicht zuverlässig bedienen ließ.
+
+### CDE-Abnahme (Checkliste nach dem Deploy)
+
+1. Jeden Stufen-Job einmal einzeln manuell starten
+   (`cde job run --name gruppe3-stufe1-staging` usw., Reihenfolge 0→4) und
+   die Logs prüfen — bei unveränderten Quellen müssen die Stufen 1–3
+   „unveraendert - Lauf uebersprungen" bzw. „Snapshot-Fingerprints
+   identisch" melden (der State kommt aus `gruppe3_etl_state`, die auch die
+   lokalen Läufe nutzen).
+2. Einmal Stufe 3 mit erzwungenem Build laufen lassen
+   (`--conf spark.kubernetes.driverEnv.FORCE_TARGET_BUILD=1` temporär in die
+   Job-Config): Zeilenzahlen müssen dem letzten lokalen Rebuild entsprechen
+   (dim_kreis 472, dim_jahr 30, dim_klimastadt 81, dim_gemeinde 10947,
+   fact_bevoelkerung 14110, fact_bauland 4720, fact_klima 1539,
+   fact_gemeinde_stamm 10947, fact_standortprofil_kpi 4099).
+3. Danach den DAG einmal komplett manuell triggern — Stufe 4 muss
+   „32 Checks OK" melden.
+
+**Hinweise:**
+
+- **Secrets:** Die Kommandos oben legen das Workload-Passwort in die
+  Job-Config. Wer das vermeiden will, nutzt Airflow-Connections plus einen
+  kleinen Wrapper oder CDE-Credentials — für die Abgabe reicht die
+  Job-Config, das Passwort ist dort nur für Projektmitglieder sichtbar.
+- **CLI-Versionen:** Die exakten Flag-Namen (`--python-env-resource-name`,
+  `--mount-N-resource`) variieren leicht zwischen CDE-Versionen — bei
+  Abweichungen `cde job create --help` konsultieren; das Setup selbst
+  (Resources → Jobs → DAG) bleibt gleich.
 
 ## Benutzung
 
@@ -344,7 +506,7 @@ Beide Welten teilen sich `gruppe3_etl_state` (Fingerprint-Skip funktioniert
 
 Alle Schritte sind **idempotent**: beliebig oft ausführbar, keine Duplikate.
 Unveränderte Quellen werden erkannt und übersprungen — ein zweiter Lauf direkt
-nach dem ersten tut fast nichts (verifiziert, s. [Stand](#stand-verifiziert-09072026)).
+nach dem ersten tut fast nichts (verifiziert, s. [Stand](#stand)).
 
 Die Stufen lassen sich auch einzeln ausführen (gleiche Reihenfolge):
 
@@ -358,7 +520,7 @@ Die Stufen lassen sich auch einzeln ausführen (gleiche Reihenfolge):
 # Target-Rebuild erzwingen, wenn sich nur Code/Contract geändert hat, aber keine Audit-Daten
 $env:FORCE_TARGET_BUILD="1"; .venv/Scripts/python.exe src/pipeline_audit_to_target.py; Remove-Item Env:FORCE_TARGET_BUILD
 
-# Täglicher Lauf um 00:00 – läuft dauerhaft
+# Täglicher Lauf um 00:00 – läuft dauerhaft (lokale Betriebsart; nicht parallel zum CDE-DAG)
 .venv/Scripts/python.exe src/scheduler.py
 
 # Kompletter Reset der gruppe3-Tabellen (z.B. um Full Load vs. Skip zu testen)
@@ -464,7 +626,7 @@ docker compose build
 # Kompletter Pipeline-Lauf (run_pipeline.py, alle Stufen):
 docker compose run --rm pipeline
 
-# Dauerhafter Scheduler:
+# Dauerhafter lokaler Scheduler (nur, wenn der CDE-DAG nicht aktiv ist — s. „Zwei Betriebsarten"):
 docker compose up scheduler
 ```
 
@@ -490,7 +652,7 @@ dieselben Tabellen und kämen sich ins Gehege).
 | Staging | `gruppe3_staging_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}` | unveränderte Rohkopie |
 | Audit | `gruppe3_audit_{gemeinden,bauland,klimadaten,bevoelkerungzahlen}` | bereinigte Basis |
 | Datenprodukt | 4 × `gruppe3_dim_*`, 5 × `gruppe3_fact_*` | Star-Schema für Konsumenten |
-| ETL-Metadaten | `gruppe3_etl_state`, 9 × `*_wap_incoming` (leere Publish-Shadow-Tabellen) | Incremental-Loading-Zustand + atomarer Publish (kein Konsumenten-Interface) |
+| ETL-Metadaten | `gruppe3_etl_state` (+ kurzlebige `*_wap_incoming`-Shadow-Tabellen, existieren nur während eines Stufe-3-Builds und werden nach dem Publish gedroppt) | Incremental-Loading-Zustand + atomarer Publish (kein Konsumenten-Interface) |
 
 Alle Tabellen sind **Apache-Iceberg-Tabellen** (`format-version` 2); die
 Klimadaten-Tabellen sind per Iceberg-Transform `TRUNCATE(4, dt)` nach Jahr
@@ -600,12 +762,16 @@ Verarbeitungs-Engine für die Transformationen (DataFrame-API statt SQL-Strings 
 gleichwertig, besser komponierbar). Ablauf: Spark liest per JDBC → rechnet →
 impyla schreibt zurück (warum nicht `df.write.jdbc`: [Probleme.md](docs/Probleme.md)).
 
-**Batch, nicht Streaming:** ein täglicher Lauf (APScheduler, 00:00
-Europe/Berlin). Ehrliche Grenze: produktiv gehörte der Scheduler auf die
-Plattform (Cloudera Data Engineering / Airflow) — Ausblick in der Präsentation.
+**Batch, nicht Streaming:** ein täglicher Lauf. Produktiv übernimmt das seit
+dem 11.07.2026 der Airflow-DAG in Cloudera Data Engineering (05:00 UTC, s.
+[CDE-Deployment](#cde-deployment-einmalig-cde-cli)); lokal bleibt der
+APScheduler (00:00 Europe/Berlin) als zweite Betriebsart. Der frühere
+„Ausblick: Scheduler gehört auf die Plattform" ist damit umgesetzt.
 
-**Kür umgesetzt:** Apache **Iceberg** als Open Table Format für die beiden
-Audit-Tabellen mit echtem row-level `MERGE INTO`/`DELETE` ([ADR-13](docs/ADR.md)).
+**Kür umgesetzt:** Apache **Iceberg** als Open Table Format für **alle**
+Tabellen (atomare Snapshot-Commits, Time Travel, Fingerprint-Skip); echtes
+row-level `MERGE INTO`/`DELETE` bei den beiden Key-Audit-Tabellen
+([ADR-13](docs/ADR.md)).
 
 ## Quellen der Referenzlisten
 
@@ -614,11 +780,12 @@ Die Referenzlisten für die Encoding-Auflösung in Stufe 2 (`src/utils/`):
 - Deutsche Kreise und Bundesländer: <https://gist.github.com/leonbeckert/8332153a233a89156ecdbb3905579904>
 - Deutsche Städtenamen: <https://www.datenbörse.net/item/Liste_von_deutschen_Staedtenamen_.csv>
 
-## Stand (verifiziert 09.07.2026)
+## Stand
 
 - [x] Datenmodell (DDLs) + Begründung
 - [x] Pipeline (3 Stufen, WAP, inkrementell, idempotent) + Orchestrator + Scheduler
 - [x] Data Contract + technische Durchsetzung als Publish-Gate
+- [x] Zweite Betriebsart CDE: Airflow-DAG deployt & aktiv (11.07.2026)
 - [ ] Restpunkte unten
 
 **Bereits live verifiziert (10.07.2026, gegen die echte DHBW-Datenbank):**
@@ -629,16 +796,27 @@ Bauland/Bevölkerung, Full Refresh für Gemeinden — Inhalts-Prüfsummen vor/na
 identisch, zweiter Lauf skippt wieder) sowie `contract_check.py` mit 32/32
 Checks OK.
 
+**Neu (11.07.2026) — Pipeline in CDE online:** Resources, die fünf
+Stufen-Jobs und der Airflow-DAG `gruppe3_data_mesh_pipeline` sind nach der
+[Deploy-Anleitung](#cde-deployment-einmalig-cde-cli) im Virtual Cluster
+angelegt, der DAG ist aktiv (täglich 05:00 UTC). Deploy-Erkenntnis: Airflow
+legt neue DAGs standardmäßig **pausiert** an, und der Pause-Toggle ließ sich
+in der CDE-Airflow-UI nicht zuverlässig bedienen — der DAG setzt deshalb
+`is_paused_upon_creation=False` ([cde/pipeline_dag.py](cde/pipeline_dag.py)).
+
 **Offene Arbeiten:**
 
 1. **End-to-End-Abnahmetest inkl. Stufe 3:** auf einem Rechner mit JDK 17 +
    `ImpalaJDBC42.jar`: `run_pipeline.py` komplett (inkl. Spark-Stufe gegen die
-   jetzt Iceberg-basierten Audit-Tabellen; laut ADR.md liest der JDBC-Pfad
-   Iceberg wie Parquet, nach dem Shadow-Swap-Umbau von `overwrite_table`
-   aber erneut zu bestätigen). Danach optional: `utils/reset_database.py` →
-   `run_pipeline.py` → zweiter Lauf muss überall „übersprungen" melden.
-2. **Abgabe-Hygiene klären (Team):** bleiben `docs/coursematerial/` (13 MB
-   Prof-Folien), `reference/` und `TODO.md` im Abgabe-Repo?
+   jetzt Iceberg-basierten Audit-Tabellen; laut [docs/ADR.md](docs/ADR.md),
+   ADR-13, liest der JDBC-Pfad Iceberg wie Parquet, nach dem
+   Shadow-Swap-Umbau von `overwrite_table` aber erneut zu bestätigen).
+   Danach optional: `utils/reset_database.py` → `run_pipeline.py` → zweiter
+   Lauf muss überall „übersprungen" melden.
+2. **CDE-Abnahme nach [Checkliste](#cde-abnahme-checkliste-nach-dem-deploy):**
+   die Stufen-Jobs einzeln laufen lassen (Skip-Meldungen prüfen), einmal
+   erzwungener Stufe-3-Build mit Zeilenzahl-Abgleich gegen den lokalen
+   Referenz-Rebuild, danach ein kompletter DAG-Lauf mit „32 Checks OK".
 3. **Data-Contract-Härtung (optional):** weitere ausführbare `quality`-SQLs
    ergänzen, z.B. Row-Count-Minima, FK-Integrität und Composite-Key-Checks für
    `fact_bevoelkerung` und `fact_klima`. Der aktuelle Pflichtstand läuft und
@@ -650,7 +828,7 @@ Checks OK.
    (im Data Contract dokumentiert).
 5. Kosmetik: `WindowExec`-Warnung (Window ohne `PARTITION BY`, bei unserer
    Datenmenge unkritisch), log4j-`ClassCastException` des JDBC-Treibers
-   (harmlos, s. [docs/spark_stolpersteine.md](docs/spark_stolpersteine.md)).
+   (harmlos, s. [docs/Probleme.md](docs/Probleme.md)).
 
 > **Warum ist alles so gebaut (und was galt früher)?** → **[ADR.md](docs/ADR.md)**
 > **Was ist schiefgegangen und wie wurde es gelöst?** → **[Probleme.md](docs/Probleme.md)**

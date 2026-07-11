@@ -5,8 +5,8 @@ Docker-Lauf, nur der Taktgeber ist ein anderer (Airflow-Schedule statt
 "docker compose run pipeline" / scheduler.py).
 
 Jeder Task triggert per CDEJobRunOperator einen zuvor angelegten CDE-Job
-(Anlage der Jobs: s. cde/README.md). Die Reihenfolge entspricht exakt
-src/run_pipeline.py:
+(Anlage der Jobs: s. Haupt-README, Abschnitt "CDE-Deployment"). Die
+Reihenfolge entspricht exakt src/run_pipeline.py:
 
     Stufe 0 Datenmodell -> 1 Staging -> 2 Audit -> 3 Target (Spark)
     -> 4 Data-Contract-Gate
