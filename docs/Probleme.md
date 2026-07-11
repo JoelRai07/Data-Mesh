@@ -31,7 +31,7 @@ Zeilen Werte hatten und die anderen KPI-Spalten nur teilweise NULL waren.
 
 **Ursache — eine Kette aus drei Effekten:**
 
-1. **Division durch 0 erzeugt Infinity.** `preis_pro_qm_eur = kaufsumme / flaeche`;
+1. **Division durch 0 erzeugt Infinity.** `preis_pro_qm_eur = kaufsumme / fläche`;
    748 Bauland-Zeilen haben `veraeusserte_flaeche_1000qm = 0` (Flächen < 500 m²
    runden amtlich auf 0, die Kaufsumme bleibt echt) → `kaufsumme / 0 = Infinity`.
 2. **Infinity/NaN vergiftet Fensteraggregate.** `AVG()`/`STDDEV()` über ein

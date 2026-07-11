@@ -90,7 +90,7 @@ Tabellenart (ADR-8), Bereinigung in Impala-SQL / Transformationen in Spark
 **Trade-off:** Kein Backfilling/DAG wie Airflow — produktiv gehörte das auf Cloudera DE (Ausblick in der Präsentation).
 
 ### ADR-11 · NULL-Semantik: `safe_div` statt Infinity/NaN
-**Kontext:** 748 Bauland-Zeilen haben `flaeche = 0` (amtliche Rundung) → `kaufsumme/0 = Infinity` → **ein** Wert vergiftet AVG/STDDEV-Fensteraggregate eines ganzen Jahrgangs → Score-Spalte komplett NULL.
+**Kontext:** 748 Bauland-Zeilen haben `fläche = 0` (amtliche Rundung) → `kaufsumme/0 = Infinity` → **ein** Wert vergiftet AVG/STDDEV-Fensteraggregate eines ganzen Jahrgangs → Score-Spalte komplett NULL.
 **Entscheidung:** Jede Division mit variablem Nenner läuft über `safe_div()` (NULL bei Nenner 0/NULL); NaN/Infinity werden beim Schreiben zu NULL; fehlendes Klima geht per `coalesce(…, 0)` neutral in den Score ein.
 **Warum:** NULL heißt hier ehrlich „nicht berechenbar" und wird von Aggregaten übersprungen — Infinity dagegen zerstört sie. Fallstudie: [Probleme.md → Fallstudie 1](Probleme.md).
 
