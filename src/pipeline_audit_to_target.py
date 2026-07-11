@@ -182,9 +182,10 @@ def overwrite_table(df, table_name, batch_size=2000):
     gesehen. Mit dem Shadow-Swap sieht ein Konsument zu JEDEM Zeitpunkt
     entweder den kompletten alten oder den kompletten neuen Stand - und der
     alte Stand bleibt als Iceberg-Snapshot per Time Travel abfragbar
-    (SELECT ... FOR SYSTEM_TIME AS OF ...). Die Shadow-Tabelle bleibt
-    zwischen den Laeufen leer stehen (winziger Metadaten-Footprint) und ist
-    NICHT Teil des Data Contracts.
+    (SELECT ... FOR SYSTEM_TIME AS OF ...). Die Shadow-Tabelle wird nach dem
+    Publish gedroppt (existiert also nur waehrend eines laufenden Builds -
+    bzw. bleibt nach einem Absturz mittendrin stehen und wird beim naechsten
+    Lauf wiederverwendet) und ist NICHT Teil des Data Contracts.
 
     WARUM NICHT df.write.jdbc(...)?
     Probiert, schlaegt aber zuverlaessig fehl: der Impala-JDBC-Treiber kann
@@ -243,7 +244,7 @@ def overwrite_table(df, table_name, batch_size=2000):
 
     # Der eigentliche PUBLISH: ein einzelnes, atomares Statement.
     cur.execute(f"INSERT OVERWRITE TABLE {table_name} SELECT * FROM {shadow_table}")
-    cur.execute(f"TRUNCATE TABLE {shadow_table}")
+    cur.execute(f"DROP TABLE IF EXISTS {shadow_table}")
 
     cur.close()
     conn.close()
