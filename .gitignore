@@ -4,4 +4,5 @@
 __pycache__/
 *.pyc
 
-src/utils/ImpalaJDBC42.jar
+# Proprietäre Treiber/Jars gehören nie ins Repo (Cloudera ImpalaJDBC42 & Co.)
+*.jar
