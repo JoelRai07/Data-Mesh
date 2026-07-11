@@ -507,3 +507,134 @@ Die Iteration-3-Rueckabwicklung beruhte auf einer unbelegten Behauptung
 verifiziert wurde. Konsequenz fuer kuenftige Entscheidungen: WER genau der
 Konsument ist, gehoert mit Dateiname/Zeile in die ADR - eine Abhaengigkeit,
 die sich nicht benennen laesst, existiert mit hoher Wahrscheinlichkeit nicht.
+
+## Iteration 5: Zweistufige Change-Detection per Iceberg-Snapshot-Fingerprint + JDBC-Jar-Fail-Fast (11.07.2026)
+
+### Ausloeser
+
+1. **Docker-Lauf von Stufe 3 scheiterte mit `ClassNotFoundException:
+   com.cloudera.impala.jdbc.Driver`.** Ursache (auf dem Host verifiziert):
+   `src/utils/ImpalaJDBC42.jar` existierte dort nicht als Datei - der
+   Bind-Mount in `docker-compose.yml` hatte beim ersten `docker compose run`
+   stillschweigend ein leeres VERZEICHNIS gleichen Namens angelegt (Standard-
+   Docker-Verhalten bei Mounts auf nicht existierende Host-Pfade). Spark bekam
+   damit ein leeres Verzeichnis in den Classpath.
+2. Die bisherige Change-Detection las fuer den "unveraendert?"-Check je
+   Snapshot-Tabelle die KOMPLETTE Tabelle (`content_signature()`:
+   `SUM(fnv_hash(...))` ueber alle Zeilen und Spalten) - bei jedem Lauf,
+   auch wenn sich nichts geaendert hatte.
+
+### Entscheidung
+
+1. **Fail-Fast statt spaeter Spark-Kryptik:** `ensure_jdbc_driver_jar()` in
+   Stufe 3 prueft VOR dem Spark-Start, ob das Jar als nicht-leere DATEI
+   vorliegt, und unterscheidet in der Fehlermeldung explizit den
+   Docker-Verzeichnis-Fall (haeufigste Ursache) vom Fehlen der Datei.
+2. **Zweistufige Change-Detection, end-to-end fuer ALLE Tabellen:**
+   - **Ebene 1 (neu):** EIN gespeicherter Ganztabellen-Fingerprint je
+     (Stufe, Tabelle) in `gruppe3_etl_state.table_fingerprint` - fuer
+     Iceberg-Tabellen die aktuelle Snapshot-ID (`table_fingerprint()` in
+     `etl_state.py`, per `DESCRIBE HISTORY` = reine METADATEN-Abfrage, kein
+     einziger Zeilen-Scan). Jeder Schreibvorgang erzeugt eine neue
+     Snapshot-ID, reine Reads nicht - Fingerprint unveraendert bedeutet
+     also: Stufe komplett ueberspringen.
+   - **Ebene 2 (bestehend):** Erst bei Fingerprint-Wechsel (oder fehlendem
+     Fingerprint, z.B. Nicht-Iceberg-Quellen in `default.*`) greift der
+     bisherige Incremental-Mechanismus: Wasserzeichen-Append,
+     `content_signature()`-Pruefsumme + Full Refresh oder zeilengenaues
+     DELETE+MERGE. Ein Fingerprint-Wechsel OHNE Inhaltsaenderung (z.B.
+     Compaction) wird auf Ebene 2 erkannt und nur der Fingerprint
+     fortgeschrieben.
+   - **Stufe 3:** `should_skip_target_build()` vergleicht statt der
+     `recorded_at`-Zeitstempel jetzt je Audit-Tabelle die Snapshot-ID, die
+     der letzte Ziel-Build tatsaechlich gelesen hat (stage="target",
+     eine State-Zeile je Audit-Tabelle statt der bisherigen "all"-Zeile) -
+     robust gegen Uhrzeit-/Reihenfolge-Effekte, verglichen wird der
+     DATENSTAND statt eines Zeitpunkts.
+3. Schema-Migration der State-Tabelle laeuft automatisch in
+   `ensure_state_table()` (`ALTER TABLE ... ADD COLUMNS`, Iceberg-Schema-
+   Evolution = reine Metadaten-Operation). Bestandszeilen lesen sich als
+   NULL -> der jeweils naechste Lauf faellt genau einmal auf Ebene 2
+   zurueck und schreibt den Fingerprint fort.
+4. Dockerfile: `procps` installiert (Sparks `load-spark-env.sh` ruft `ps`
+   auf - vorher nur eine Warnung, jetzt sauber).
+
+### Konsequenz
+
+Der Unveraendert-Fall (Normalfall bei taeglichen Laeufen) kostet pro Tabelle
+und Stufe nur noch eine `DESCRIBE`-Metadaten-Abfrage statt eines
+Full-Table-Scans; die Quelltabellen in `default.*` (kein Iceberg, kein
+verlaesslicher Metadaten-Indikator) bleiben die einzige Stelle, an der im
+Unveraendert-Fall weiterhin ein Pruefsummen-Scan noetig ist.
+
+## Iteration 5b: Performance-Tuning Stufe 3 (Spark), ohne Verhaltensaenderung (11.07.2026)
+
+Drei risikoarme Optimierungen in `pipeline_audit_to_target.py` - reine
+"gleiche Daten, weniger Verwaltung"-Massnahmen, Ergebnisdaten/WAP-Atomaritaet/
+Fingerprint-Skip unveraendert:
+
+1. **`spark.sql.shuffle.partitions=16`** (statt Default 200): bei
+   Ergebnisgroessen von <15k Zeilen waren 200 Shuffle-Tasks fast reiner
+   Scheduling-Overhead (in den Logs sichtbar als "(136 + 15) / 200").
+2. **`overwrite_table()` gibt `len(rows)` zurueck**, `main()` nutzt das fuer
+   die Log-Ausgabe statt `df.count()`: das count() fuehrte bei nicht
+   gecachten DataFrames (dim_jahr, dim_klimastadt, fact_standortprofil_kpi)
+   den kompletten Plan INKLUSIVE erneuter JDBC-Reads ein zweites Mal aus.
+   Nebeneffekt in die richtige Richtung: geloggt wird jetzt exakt die
+   geschriebene Zeilenmenge, nicht eine Neu-Berechnung.
+3. **INSERT-Batch-Groesse 500 -> 2000**: jedes `INSERT INTO ... VALUES`-
+   Statement kostet in Impala fixe Planungszeit unabhaengig von der
+   Zeilenzahl; ~90 Statements ueber alle 9 Zieltabellen wurden zu ~25.
+   Statement-Groesse bleibt bei wenigen hundert KB SQL-Text.
+
+BEWUSST NICHT umgesetzt (Punkt "Reads einmalig + Signaturen-Refactor" aus
+der Analyse): die Mehrfach-Reads der Audit-Tabellen (klimadaten 3x,
+gemeinden/bevoelkerungzahlen je 2x) zu buendeln waere der groesste Hebel,
+ist aber ein Refactoring ueber 8 Funktions-Signaturen mit echtem
+Regressionsrisiko (dim_klimastadt/fact_klima bzw. dim_gemeinde/
+fact_gemeinde_stamm wenden auf denselben Roh-Read UNTERSCHIEDLICHE
+Filter/Dedupes an - geteilt werden duerfte nur der Roh-Read). Entscheidung:
+aufgeschoben, bis Rebuild-Laufzeit tatsaechlich ein Problem ist.
+
+## Iteration 6: Zweite Betriebsart Cloudera Data Engineering (Airflow-DAG + nativer Iceberg-I/O-Modus) (11.07.2026)
+
+### Entscheidung
+
+Die Pipeline bekommt neben dem lokalen Docker-Weg eine zweite,
+gleichberechtigte Betriebsart in Cloudera Data Engineering - OHNE die
+Pipeline-Logik zu duplizieren:
+
+1. **Ein Repo, zwei Einstiegspunkte:** `run_pipeline.py` bleibt der lokale
+   Orchestrator; `cde/pipeline_dag.py` (Airflow, CDEJobRunOperator) ruft
+   DIESELBEN Stufen-Module als CDE-Jobs in derselben Reihenfolge auf
+   (Stufe 0 -> 1 -> 2 -> 3 -> 4). Der APScheduler-Container wird in der
+   CDE-Betriebsart durch den Airflow-Schedule ersetzt (Retries, Monitoring,
+   Wiederaufsetzen ab der gescheiterten Stufe inklusive).
+2. **SPARK_IO_MODE ("jdbc" | "catalog") in Stufe 3:** Der gesamte
+   JDBC-Unterbau (Treiber-Jar, customSchema-Workaround fuer area_km2,
+   collect() + VALUES-Batches + Shadow-Tabelle) existiert NUR, weil Spark
+   lokal ausserhalb des Clusters laeuft und nichts ausser dem
+   Impala-Endpoint sieht. Im Cluster (CDE) ist all das ueberfluessig:
+   `spark.read.table()` liest den Iceberg-Katalog direkt, ein natives
+   `INSERT OVERWRITE` ist bereits ein einzelner atomarer
+   Iceberg-Snapshot-Commit (WAP-Garantie identisch zum Shadow-Swap).
+   Der Schalter kapselt AUSSCHLIESSLICH die I/O-Schicht (get_spark,
+   read_table, read_gemeinden, overwrite_table, Jar-Fail-Fast) - alle
+   build_*-Funktionen und der Fingerprint-/State-Mechanismus sind in
+   beiden Modi byte-identisch. Default ist "jdbc", damit ein frisch
+   gezogenes Repo ohne Vorwissen lokal laeuft.
+3. **Geteilter Zustand:** gruppe3_etl_state ist fuer beide Betriebsarten
+   dieselbe Tabelle - ein CDE-Lauf und ein lokaler Lauf sehen gegenseitig
+   ihre Fingerprints/Wasserzeichen und skippen korrekt. Einzige Betriebs-
+   regel: nicht beide SCHEDULER parallel aktiv haben (Idempotenz und
+   atomare Commits verhindern zwar Schaeden, aber es waere unsauber).
+
+### Verifikation
+
+- Lokaler Weg (jdbc, Default) nach dem Umbau end-to-end in Docker gelaufen:
+  alle Stufen skippen korrekt ueber die Fingerprints, Contract 32/32.
+- Katalog-Modus: Code-Pfad ist von hier aus nicht testbar (braucht den
+  CDE-Virtual-Cluster) - Verifikationsplan steht in cde/README.md
+  (Einzel-Job-Laeufe, erzwungener Build mit Zeilenzahl-Abgleich gegen den
+  lokalen Referenz-Rebuild, kompletter DAG-Lauf). NICHT abhaken, bevor das
+  gegen den echten VC gelaufen ist.

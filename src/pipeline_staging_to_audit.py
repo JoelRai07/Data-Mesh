@@ -123,6 +123,7 @@ from etl_state import (
     get_latest_state,
     record_state,
     content_signature,
+    table_fingerprint,
 )
 
 DATABASE = os.getenv("DATABASE", "gruppe3")
@@ -400,6 +401,18 @@ def audit_table_incremental(cur, name, staging_table, audit_table_name, select_l
     state = get_latest_state(cur, "audit", name)
     watermark = state["watermark_value"] if state else None
 
+    # Ebene 1 (s. etl_state.py): Snapshot-Fingerprint der Staging-Tabelle
+    # (immer Iceberg) - unveraendert seit dem letzten Audit-Lauf heisst:
+    # garantiert keine neuen Zeilen, COUNT- und Append-Schritt entfallen.
+    staging_fp = table_fingerprint(cur, staging_table)
+    if (
+        staging_fp is not None
+        and state is not None
+        and state["table_fingerprint"] == staging_fp
+    ):
+        cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+        return cur.fetchone()[0], False
+
     filters = [base_where] if base_where else []
     if watermark is not None:
         filters.append(f"{TIME_SERIES_WATERMARK_COLUMN} > '{watermark}'")
@@ -422,7 +435,18 @@ def audit_table_incremental(cur, name, staging_table, audit_table_name, select_l
         cur.execute(f"SELECT MAX({TIME_SERIES_WATERMARK_COLUMN}) FROM {staging_table}")
         new_watermark = cur.fetchone()[0]
         if new_watermark is not None:
-            record_state(cur, "audit", name, watermark_value=new_watermark)
+            record_state(
+                cur, "audit", name,
+                watermark_value=new_watermark, table_fingerprint=staging_fp,
+            )
+    elif state is not None and staging_fp is not None and state["table_fingerprint"] != staging_fp:
+        # Fingerprint gewechselt, aber keine Zeilen hinter dem Wasserzeichen
+        # (z.B. Compaction des Staging) -> nur Fingerprint fortschreiben,
+        # damit Ebene 1 beim naechsten Lauf wieder greift.
+        record_state(
+            cur, "audit", name,
+            watermark_value=watermark, table_fingerprint=staging_fp,
+        )
 
     cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
     return cur.fetchone()[0], changed
@@ -485,12 +509,32 @@ def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, colum
       CREATE+RENAME+DROP-Tanz damit ueberfluessig. Details/Begruendung: ADR.md.
     """
     all_columns = get_columns(cur, staging_table)
-
-    # 1) Guenstiger Vor-Check: hat sich der EINGANG (Staging) ueberhaupt
-    # veraendert? Ein Aggregat-Scan statt DELETE+MERGE bei jedem Lauf.
-    row_count_staging, content_hash = content_signature(cur, staging_table, all_columns)
     state = get_latest_state(cur, "audit", name)
+
+    # 1a) Ebene 1 (s. etl_state.py): Snapshot-Fingerprint der Staging-Tabelle
+    # (immer Iceberg) - reine Metadaten-Abfrage. Unveraendert -> weder
+    # Pruefsummen-Scan noch DELETE+MERGE (der Normalfall bei taeglichen
+    # Laeufen ohne neue Quelldaten).
+    staging_fp = table_fingerprint(cur, staging_table)
+    if (
+        staging_fp is not None
+        and state is not None
+        and state["table_fingerprint"] == staging_fp
+    ):
+        cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+        return cur.fetchone()[0], False
+
+    # 1b) Ebene 2: Fingerprint hat gewechselt (oder fehlt noch) - erst jetzt
+    # der Pruefsummen-Scan ueber die Zeilen. Gleicher Inhalt trotz neuem
+    # Snapshot (z.B. Compaction) -> Fingerprint fortschreiben und fertig.
+    row_count_staging, content_hash = content_signature(cur, staging_table, all_columns)
     if state and state["content_hash"] == content_hash:
+        if staging_fp is not None and state["table_fingerprint"] != staging_fp:
+            record_state(
+                cur, "audit", name,
+                content_hash=content_hash, row_count=state["row_count"],
+                table_fingerprint=staging_fp,
+            )
         cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
         return cur.fetchone()[0], False
 
@@ -532,10 +576,15 @@ def audit_table_keyed_snapshot(cur, name, staging_table, audit_table_name, colum
         f"WHEN NOT MATCHED THEN INSERT ({insert_columns}) VALUES ({insert_values})"
     )
 
-    # Tabellen-Pruefsumme fortschreiben: Grundlage fuer den Vor-Check oben
-    # UND fuer should_skip_target_build() in pipeline_audit_to_target.py
-    # (entscheidet ueber den Spark-Rebuild des Star-Schemas).
-    record_state(cur, "audit", name, content_hash=content_hash, row_count=row_count_staging)
+    # Pruefsumme + Staging-Fingerprint fortschreiben: Grundlage fuer die
+    # Vor-Checks oben (Ebene 1/2). should_skip_target_build() in
+    # pipeline_audit_to_target.py prueft seinerseits die Snapshot-IDs der
+    # AUDIT-Tabellen und sieht den soeben erzeugten neuen Snapshot.
+    record_state(
+        cur, "audit", name,
+        content_hash=content_hash, row_count=row_count_staging,
+        table_fingerprint=staging_fp,
+    )
 
     cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
     return cur.fetchone()[0], True
@@ -556,11 +605,31 @@ def audit_table_snapshot(cur, name, staging_table, audit_table_name, select_list
     entweder den kompletten alten oder den kompletten neuen Stand, und der
     vorherige Stand bleibt per Time Travel abfragbar.
     """
+    state = get_latest_state(cur, "audit", name)
+
+    # Ebene 1 (s. etl_state.py): Snapshot-Fingerprint der Staging-Tabelle -
+    # unveraendert -> Audit-Lauf ohne jeden Zeilen-Scan uebersprungen.
+    staging_fp = table_fingerprint(cur, staging_table)
+    if (
+        staging_fp is not None
+        and state is not None
+        and state["table_fingerprint"] == staging_fp
+    ):
+        cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
+        return cur.fetchone()[0], False
+
+    # Ebene 2: Pruefsummen-Scan nur bei Fingerprint-Wechsel. Gleicher Inhalt
+    # trotz neuem Snapshot (z.B. Compaction) -> Fingerprint fortschreiben.
     columns = get_columns(cur, staging_table)
     row_count_staging, content_hash = content_signature(cur, staging_table, columns)
 
-    state = get_latest_state(cur, "audit", name)
     if state and state["content_hash"] == content_hash:
+        if staging_fp is not None and state["table_fingerprint"] != staging_fp:
+            record_state(
+                cur, "audit", name,
+                content_hash=content_hash, row_count=state["row_count"],
+                table_fingerprint=staging_fp,
+            )
         cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
         return cur.fetchone()[0], False
 
@@ -568,7 +637,11 @@ def audit_table_snapshot(cur, name, staging_table, audit_table_name, select_list
     cur.execute(
         f"INSERT OVERWRITE TABLE {audit_table_name} SELECT {select_list} FROM {staging_table}{where_clause}"
     )
-    record_state(cur, "audit", name, content_hash=content_hash, row_count=row_count_staging)
+    record_state(
+        cur, "audit", name,
+        content_hash=content_hash, row_count=row_count_staging,
+        table_fingerprint=staging_fp,
+    )
 
     cur.execute(f"SELECT COUNT(*) FROM {audit_table_name}")
     return cur.fetchone()[0], True

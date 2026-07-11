@@ -77,8 +77,15 @@ schleusen. Spark wird dort eingesetzt, wo es echten Mehrwert hat: Unpivot per
 **Wie funktioniert das Incremental Loading?** Den zuletzt verarbeiteten Stand
 merkt sich die Pipeline in `gruppe3_etl_state` (Iceberg, ein Eintrag je
 Stufe+Tabelle, per `MERGE INTO` geupsertet; die Verlaufs-Historie liegt in den
-Iceberg-Snapshots — s. [src/etl_state.py](src/etl_state.py)). Drei Strategien,
-je nach Tabellenart:
+Iceberg-Snapshots — s. [src/etl_state.py](src/etl_state.py)).
+
+**Ebene 1 — Ganztabellen-Fingerprint (ohne Zeilen-Scan):** Vor jeder Stufe
+wird zuerst EIN gespeicherter Fingerprint je Tabelle verglichen — für
+Iceberg-Tabellen die aktuelle **Snapshot-ID** (`DESCRIBE HISTORY`, reine
+Metadaten-Abfrage). Unverändert → die Stufe wird komplett übersprungen, ohne
+eine einzige Datenzeile zu lesen. Erst bei einem Fingerprint-Wechsel greift
+Ebene 2, der eigentliche Incremental-Mechanismus. Drei Strategien, je nach
+Tabellenart:
 
 - **Wasserzeichen** (Klimadaten, echte Zeitreihe über `dt`): nur neuere Zeilen
   werden angehängt — kein täglicher Full-Rewrite von 8,6 Mio. Zeilen. Die
@@ -97,10 +104,14 @@ je nach Tabellenart:
   atomarer Snapshot-Commit).
 
 Der Skip-Mechanismus zieht sich durch die **ganze** Pipeline: Stufe 3
-überspringt den kompletten Spark-Lauf, wenn sich seit dem letzten Ziel-Build
-keine Audit-Tabelle geändert hat, und der Publish selbst ist ein atomarer
+überspringt den kompletten Spark-Lauf, wenn jede Audit-Tabelle noch exakt die
+Iceberg-Snapshot-ID hat, die der letzte Ziel-Build gelesen hat (Vergleich des
+Datenstands statt eines Zeitstempels), und der Publish selbst ist ein atomarer
 Shadow-Swap (s. `overwrite_table` in
-[src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py)).
+[src/pipeline_audit_to_target.py](src/pipeline_audit_to_target.py)). Einzige
+Stelle, an der im Unverändert-Fall noch Zeilen gescannt werden: die fremden
+Quelltabellen in `default.*` (kein Iceberg → kein verlässlicher
+Metadaten-Fingerprint → Prüfsummen-Scan als Fallback).
 
 Die fachlichen Begründungen stehen ausführlich in den Modul-Docstrings der
 jeweiligen Skripte; die Iceberg-Entscheidung inkl. aller live verifizierten
@@ -136,6 +147,11 @@ Data-Mesh/
 │       ├── german_regions.txt       # Referenzliste Landkreise + kreisfreie Städte
 │       ├── german_states.txt        # Referenzliste der 16 Bundesländer
 │       └── ImpalaJDBC42.jar         # JDBC-Treiber für Spark (lokal bereitzustellen, s. Einrichtung)
+│
+├── cde/
+│   ├── pipeline_dag.py              # Airflow-DAG für Cloudera Data Engineering (5 Stufen als Tasks)
+│   ├── requirements-cde.txt         # Python-Env für CDE-Jobs (ohne pyspark/APScheduler)
+│   └── README.md                    # Deploy-Anleitung CDE (Resources, Jobs, DAG, Verifikation)
 │
 ├── data/
 │   ├── data_contract.yaml           # DELIVERABLE 3: Data Contract (Schema, Nutzung, Qualität)
@@ -302,6 +318,22 @@ ausgeführt). Die Pipeline bricht mit einer klaren Fehlermeldung ab, falls sie
 auf eine noch nicht migrierte Tabelle trifft. Bei einer frisch zurückgesetzten
 Datenbank ist keine Migration nötig — alle Tabellen werden direkt als Iceberg
 angelegt.
+
+## Zwei Betriebsarten: lokal (Docker) und Cloudera Data Engineering
+
+Die Pipeline läuft mit **demselben Code unter `src/`** in zwei Umgebungen:
+
+- **Lokal / Docker** (dieser README-Rest): `docker compose run --rm pipeline`
+  bzw. die `.venv`-Aufrufe unten. Spark läuft außerhalb des Clusters und
+  erreicht die Daten über den Impala-JDBC-Endpoint
+  (`SPARK_IO_MODE=jdbc`, Default — braucht das JDBC-Jar, s. Einrichtung).
+- **CDE / Airflow** (produktiver Scheduler): Ein Airflow-DAG orchestriert die
+  fünf Stufen als CDE-Jobs; Stufe 3 liest/schreibt Iceberg dort **nativ**
+  über den Katalog (`SPARK_IO_MODE=catalog` — kein JDBC-Jar, kein
+  collect()-Umweg). Setup und Verifikation: [cde/README.md](cde/README.md).
+
+Beide Welten teilen sich `gruppe3_etl_state` (Fingerprint-Skip funktioniert
+über die Grenze hinweg); nur nicht beide **Scheduler** gleichzeitig betreiben.
 
 ## Benutzung
 

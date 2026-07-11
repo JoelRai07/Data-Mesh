@@ -27,12 +27,28 @@ from etl_state import (
     get_latest_state,
     record_state,
     table_exists,
+    table_fingerprint,
     ICEBERG_TBLPROPERTIES,
 )
 
 DATABASE = os.getenv("DATABASE", "gruppe3")
+PREFIX = os.getenv("PREFIX", "gruppe3_")
 JDBC_JAR_PATH = os.path.join(os.path.dirname(__file__), "utils", "ImpalaJDBC42.jar")
 JDBC_DRIVER_CLASS = "com.cloudera.impala.jdbc.Driver"
+
+# ZWEI BETRIEBSARTEN fuer die Spark-I/O-Schicht (nur Lesen/Schreiben - die
+# fachliche Logik in den build_*-Funktionen ist identisch):
+#   "jdbc"    (Default): Spark laeuft AUSSERHALB des Clusters (lokal/Docker)
+#             und erreicht die Daten nur ueber den Impala-JDBC-Endpoint.
+#             Lesen per JDBC-Treiber-Jar, Schreiben per collect() +
+#             INSERT INTO ... VALUES in die Shadow-Tabelle (s.
+#             overwrite_table-Docstring fuer das Warum).
+#   "catalog": Spark laeuft IM Cluster (Cloudera Data Engineering) und sieht
+#             den Iceberg-Katalog/Hive-Metastore direkt. Lesen per
+#             spark.read.table(), Schreiben per nativem, atomarem
+#             INSERT OVERWRITE (ein Iceberg-Snapshot-Commit) - JDBC-Jar,
+#             collect()-Umweg und Shadow-Tabelle entfallen komplett.
+SPARK_IO_MODE = os.getenv("SPARK_IO_MODE", "jdbc").strip().lower()
 
 AUDIT_SOURCE_TABLES = ["bauland", "bevoelkerungzahlen", "gemeinden", "klimadaten"]
 TRUTHY_VALUES = {"1", "true", "yes", "y", "ja"}
@@ -46,7 +62,19 @@ def safe_div(numerator, denominator):
 
 
 def get_spark():
-    """Output: SparkSession (local, JDBC-Treiber via extraClassPath, an 127.0.0.1 gebunden)."""
+    """Output: SparkSession passend zur Betriebsart (s. SPARK_IO_MODE):
+    jdbc = lokal/Docker (local[*], JDBC-Treiber via extraClassPath, an
+    127.0.0.1 gebunden); catalog = im Cluster (CDE stellt Master/Deploy-Mode
+    und die Iceberg-Katalog-Konfiguration ueber die Job-Config bereit -
+    hier nur Hive-Support aktivieren, nichts hart verdrahten)."""
+    if SPARK_IO_MODE == "catalog":
+        return (
+            SparkSession.builder
+            .appName("gruppe3_pipeline_audit_to_target")
+            .config("spark.sql.shuffle.partitions", "16")
+            .enableHiveSupport()
+            .getOrCreate()
+        )
     return (
         SparkSession.builder
         .appName("gruppe3_pipeline_audit_to_target")
@@ -55,6 +83,11 @@ def get_spark():
         .config("spark.executor.extraClassPath", JDBC_JAR_PATH)
         .config("spark.driver.host", "127.0.0.1")
         .config("spark.driver.bindAddress", "127.0.0.1")
+        # Default waeren 200 Shuffle-Partitionen - bei unseren Datenmengen
+        # (groesste Quelle ~262k Zeilen, Ergebnisse <15k Zeilen) ist das fast
+        # reiner Task-Scheduling-Overhead. 16 passt zu local[*] auf einer
+        # Maschine; bei deutlich wachsenden Datenmengen wieder erhoehen.
+        .config("spark.sql.shuffle.partitions", "16")
         .getOrCreate()
     )
 
@@ -74,7 +107,10 @@ def jdbc_url():
 
 
 def read_table(spark, table_name):
-    """Input: table_name. Output: Spark DataFrame (JDBC-Read aus Impala)."""
+    """Input: table_name. Output: Spark DataFrame - nativer Katalog-Read (CDE)
+    oder JDBC-Read aus Impala (lokal/Docker), s. SPARK_IO_MODE."""
+    if SPARK_IO_MODE == "catalog":
+        return spark.read.table(f"{DATABASE}.{table_name}")
     return (
         spark.read.format("jdbc")
         .option("url", jdbc_url())
@@ -85,9 +121,13 @@ def read_table(spark, table_name):
 
 
 def read_gemeinden(spark):
-    """Output: DataFrame aus gruppe3_audit_gemeinden. area_km2/per_km2 werden
-    als STRING gelesen und area_km2 zu double gecastet (Treiber wirft sonst
-    einen Konvertierungsfehler auf diesen Spalten)."""
+    """Output: DataFrame aus gruppe3_audit_gemeinden. Nur im JDBC-Modus werden
+    area_km2/per_km2 als STRING gelesen und area_km2 zurueck zu double
+    gecastet - reiner Workaround fuer einen Konvertierungsfehler des
+    Impala-JDBC-Treibers auf diesen Spalten. Im Katalog-Modus liefert das
+    Tabellenschema area_km2 direkt als DOUBLE, dort waere der Umweg falsch."""
+    if SPARK_IO_MODE == "catalog":
+        return spark.read.table(f"{DATABASE}.gruppe3_audit_gemeinden")
     return (
         spark.read.format("jdbc")
         .option("url", jdbc_url())
@@ -114,9 +154,20 @@ def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def overwrite_table(df, table_name, batch_size=500):
+def overwrite_table(df, table_name, batch_size=2000):
     """
-    ATOMARER PUBLISH (Write-Audit-Publish konsequent zu Ende gedacht):
+    ATOMARER PUBLISH (Write-Audit-Publish konsequent zu Ende gedacht).
+
+    KATALOG-MODUS (CDE, s. SPARK_IO_MODE): Spark sieht den Iceberg-Katalog
+    direkt - ein natives "INSERT OVERWRITE ziel SELECT ..." ist bereits EIN
+    atomarer Iceberg-Snapshot-Commit. Der komplette JDBC-Unterbau darunter
+    (collect(), VALUES-Batches, Shadow-Tabelle) ist in diesem Modus
+    ueberfluessig und wird uebersprungen; die Spalten werden vorher explizit
+    in Ziel-Schema-Reihenfolge gebracht (INSERT OVERWRITE matcht
+    positionsbasiert). Zurueck kommt die Zeilenzahl aus den
+    Iceberg-Metadaten des frisch geschriebenen Snapshots.
+
+    JDBC-MODUS (lokal/Docker), das Folgende gilt nur dort:
     sammelt die Ergebniszeilen ein (collect()), schreibt sie per impyla als
     INSERT INTO ... VALUES-Batches zunaechst in eine unsichtbare
     Shadow-Tabelle ({table_name}_wap_incoming, Iceberg, gleiches Schema wie
@@ -145,7 +196,26 @@ def overwrite_table(df, table_name, batch_size=500):
     Deshalb: Zeilen zum Treiber holen (collect() - bei unseren Datengroessen
     von ein paar zehntausend Zeilen unproblematisch) und als reinen SQL-Text
     einfuegen, ganz ohne Parameter-Bindung.
+
+    batch_size=2000: jedes INSERT-Statement kostet in Impala fixe Planungs-/
+    Scheduling-Zeit unabhaengig von der Zeilenzahl - weniger, dafuer
+    groessere Batches reduzieren diesen Overhead. Bei unseren Spaltenbreiten
+    bleibt ein 2000er-Statement bei ein paar hundert KB SQL-Text, weit unter
+    Impalas Statement-Groessen-Limit.
+
+    Gibt die Anzahl der geschriebenen Zeilen zurueck (exakt die collect()-
+    Menge - kein erneutes df.count(), das den kompletten Plan inklusive
+    JDBC-Reads ein zweites Mal ausfuehren wuerde).
     """
+    if SPARK_IO_MODE == "catalog":
+        spark = df.sparkSession
+        target = f"{DATABASE}.{table_name}"
+        target_columns = [field.name for field in spark.table(target).schema.fields]
+        view_name = f"wap_incoming_{table_name}"
+        df.select(*target_columns).createOrReplaceTempView(view_name)
+        spark.sql(f"INSERT OVERWRITE TABLE {target} SELECT * FROM {view_name}")
+        return spark.table(target).count()
+
     rows = df.collect()
     columns = df.columns
     col_list = ", ".join(columns)
@@ -177,6 +247,7 @@ def overwrite_table(df, table_name, batch_size=500):
 
     cur.close()
     conn.close()
+    return len(rows)
 
 
 # --- Dimensionen ---
@@ -511,22 +582,65 @@ def build_fact_standortprofil_kpi(spark, dim_gemeinde, fact_bevoelkerung, fact_b
 # --- Incremental Loading Stufe 3 ---
 # Star-Schema bleibt Full Reload (Window-Funktionen brauchen ohnehin jede
 # Zeile der Partition, Zieltabellen sind klein). Einzige Optimierung: der
-# komplette Spark-Lauf wird uebersprungen, wenn seit dem letzten Ziel-Build
-# keine Audit-Tabelle neuer ist (s. should_skip_target_build).
+# komplette Spark-Lauf wird uebersprungen, wenn sich seit dem letzten
+# Ziel-Build KEINE Audit-Tabelle geaendert hat. Der Vergleich laeuft ueber
+# den Ganztabellen-Fingerprint (Iceberg-Snapshot-ID, s. etl_state.py) je
+# Audit-Tabelle - eine reine Metadaten-Abfrage ohne Zeilen-Scan und robuster
+# als der fruehere recorded_at-Zeitstempel-Vergleich (unabhaengig von
+# Uhrzeiten/Reihenfolge der Stufen-Laeufe: verglichen wird der tatsaechliche
+# Datenstand, den der letzte Build gelesen hat).
+
+def audit_table_name(name):
+    """Input: fachlicher Name (z.B. 'bauland'). Output: Audit-Tabellenname."""
+    return f"{PREFIX}audit_{name}"
+
 
 def should_skip_target_build(cur):
-    """Input: Cursor. Output: bool - True, wenn keine der vier Audit-Tabellen
-    neuer ist als der letzte Ziel-Build (record_state stage="target")."""
-    target_state = get_latest_state(cur, "target", "all")
-    if target_state is None:
-        return False
-
+    """Input: Cursor. Output: bool - True, wenn jede der vier Audit-Tabellen
+    noch exakt den Iceberg-Snapshot hat, den der letzte Ziel-Build gelesen
+    hat (record_state stage="target" je Tabelle)."""
     for name in AUDIT_SOURCE_TABLES:
-        audit_state = get_latest_state(cur, "audit", name)
-        if audit_state is None or audit_state["recorded_at"] > target_state["recorded_at"]:
+        state = get_latest_state(cur, "target", name)
+        if state is None or state["table_fingerprint"] is None:
             return False
-
+        if table_fingerprint(cur, audit_table_name(name)) != state["table_fingerprint"]:
+            return False
     return True
+
+
+def record_target_build_state(cur):
+    """Schreibt je Audit-Tabelle den soeben verbauten Snapshot-Fingerprint
+    (stage="target") - Vergleichsbasis fuer should_skip_target_build()."""
+    for name in AUDIT_SOURCE_TABLES:
+        record_state(
+            cur, "target", name,
+            table_fingerprint=table_fingerprint(cur, audit_table_name(name)),
+        )
+
+
+def ensure_jdbc_driver_jar():
+    """Fail-Fast VOR dem Spark-Start (nur JDBC-Modus; im Katalog-Modus wird
+    kein Treiber-Jar gebraucht): bricht mit klarer Anleitung ab, wenn
+    der (nicht eingecheckte) Impala-JDBC-Treiber fehlt. Wichtigster Fall:
+    ein Docker-Bind-Mount auf eine nicht vorhandene Host-Datei legt
+    stillschweigend ein leeres VERZEICHNIS gleichen Namens an - Spark meldet
+    dann erst spaet eine kryptische ClassNotFoundException."""
+    if SPARK_IO_MODE == "catalog":
+        return
+    if os.path.isdir(JDBC_JAR_PATH):
+        raise RuntimeError(
+            f"{JDBC_JAR_PATH} ist ein VERZEICHNIS, keine Datei - typisches "
+            "Docker-Artefakt: 'docker compose run' wurde gestartet, bevor die "
+            "JAR-Datei auf dem Host lag, und der Bind-Mount hat ein leeres "
+            "Verzeichnis angelegt. Verzeichnis loeschen und die echte "
+            "ImpalaJDBC42.jar unter src/utils/ ablegen (s. README, Einrichtung)."
+        )
+    if not os.path.isfile(JDBC_JAR_PATH) or os.path.getsize(JDBC_JAR_PATH) == 0:
+        raise RuntimeError(
+            f"{JDBC_JAR_PATH} fehlt oder ist leer. Der proprietaere "
+            "Cloudera-Treiber ist nicht eingecheckt - ImpalaJDBC42.jar unter "
+            "src/utils/ ablegen (s. README, Einrichtung), dann erneut starten."
+        )
 
 
 def should_force_target_build():
@@ -545,67 +659,68 @@ def main():
     conn.close()
 
     if skip:
-        print("Keine Aenderung in den Audit-Tabellen seit dem letzten Ziel-Build - Spark-Lauf wird uebersprungen.")
+        print("Keine Aenderung in den Audit-Tabellen seit dem letzten Ziel-Build (Snapshot-Fingerprints identisch) - Spark-Lauf wird uebersprungen.")
         return
     if force:
         print("FORCE_TARGET_BUILD=1 gesetzt - Spark-Lauf wird trotz unveraenderter Audit-Tabellen ausgefuehrt.")
 
+    ensure_jdbc_driver_jar()
     spark = get_spark()
     spark.sparkContext.setLogLevel("WARN")
 
     print("Baue dim_kreis ...")
     dim_kreis = build_dim_kreis(spark).cache()
-    overwrite_table(dim_kreis, "gruppe3_dim_kreis")
-    print(f"  -> OK ({dim_kreis.count()} Zeilen)")
+    n = overwrite_table(dim_kreis, "gruppe3_dim_kreis")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue dim_jahr ...")
     dim_jahr = build_dim_jahr(spark)
-    overwrite_table(dim_jahr, "gruppe3_dim_jahr")
-    print(f"  -> OK ({dim_jahr.count()} Zeilen)")
+    n = overwrite_table(dim_jahr, "gruppe3_dim_jahr")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue dim_klimastadt ...")
     dim_klimastadt = build_dim_klimastadt(spark)
-    overwrite_table(dim_klimastadt, "gruppe3_dim_klimastadt")
-    print(f"  -> OK ({dim_klimastadt.count()} Zeilen)")
+    n = overwrite_table(dim_klimastadt, "gruppe3_dim_klimastadt")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue dim_gemeinde ...")
     dim_gemeinde = build_dim_gemeinde(spark, dim_kreis).cache()
-    overwrite_table(dim_gemeinde, "gruppe3_dim_gemeinde")
-    print(f"  -> OK ({dim_gemeinde.count()} Zeilen)")
+    n = overwrite_table(dim_gemeinde, "gruppe3_dim_gemeinde")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue fact_bevoelkerung ...")
     fact_bevoelkerung = build_fact_bevoelkerung(spark).cache()
-    overwrite_table(fact_bevoelkerung, "gruppe3_fact_bevoelkerung")
-    print(f"  -> OK ({fact_bevoelkerung.count()} Zeilen)")
+    n = overwrite_table(fact_bevoelkerung, "gruppe3_fact_bevoelkerung")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue fact_bauland ...")
     fact_bauland = build_fact_bauland(spark).cache()
-    overwrite_table(fact_bauland, "gruppe3_fact_bauland")
-    print(f"  -> OK ({fact_bauland.count()} Zeilen)")
+    n = overwrite_table(fact_bauland, "gruppe3_fact_bauland")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue fact_klima ...")
     fact_klima = build_fact_klima(spark).cache()
-    overwrite_table(fact_klima, "gruppe3_fact_klima")
-    print(f"  -> OK ({fact_klima.count()} Zeilen)")
+    n = overwrite_table(fact_klima, "gruppe3_fact_klima")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue fact_gemeinde_stamm ...")
     fact_gemeinde_stamm = build_fact_gemeinde_stamm(spark, dim_gemeinde).cache()
-    overwrite_table(fact_gemeinde_stamm, "gruppe3_fact_gemeinde_stamm")
-    print(f"  -> OK ({fact_gemeinde_stamm.count()} Zeilen)")
+    n = overwrite_table(fact_gemeinde_stamm, "gruppe3_fact_gemeinde_stamm")
+    print(f"  -> OK ({n} Zeilen)")
 
     print("Baue fact_standortprofil_kpi ...")
     fact_standortprofil_kpi = build_fact_standortprofil_kpi(
         spark, dim_gemeinde, fact_bevoelkerung, fact_bauland, fact_klima, fact_gemeinde_stamm
     )
-    overwrite_table(fact_standortprofil_kpi, "gruppe3_fact_standortprofil_kpi")
-    print(f"  -> OK ({fact_standortprofil_kpi.count()} Zeilen)")
+    n = overwrite_table(fact_standortprofil_kpi, "gruppe3_fact_standortprofil_kpi")
+    print(f"  -> OK ({n} Zeilen)")
 
     spark.stop()
 
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(f"USE {DATABASE}")
-    record_state(cur, "target", "all")
+    record_target_build_state(cur)
     cur.close()
     conn.close()
 

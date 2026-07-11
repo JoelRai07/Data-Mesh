@@ -12,6 +12,7 @@ from etl_state import (
     record_state,
     get_columns,
     content_signature,
+    table_fingerprint,
 )
 
 SOURCE_DATABASE = os.getenv("SOURCE_DATABASE", "default")
@@ -53,6 +54,18 @@ def stage_table_incremental(cur, source_table, staging_table, watermark_column):
     state = get_latest_state(cur, "staging", source_table)
     watermark = state["watermark_value"] if state else None
 
+    # Ebene 1 (s. etl_state.py): Ganztabellen-Fingerprint der Quelle - reine
+    # Metadaten-Abfrage. Unveraendert -> weder MAX()-Scan noch INSERT noetig.
+    # Nur fuer Iceberg-Quellen verfuegbar; sonst None -> Wasserzeichen-Logik.
+    source_fp = table_fingerprint(cur, source_fqn)
+    if (
+        source_fp is not None
+        and state is not None
+        and state["table_fingerprint"] == source_fp
+    ):
+        cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
+        return cur.fetchone()[0], False
+
     if watermark is None:
         cur.execute(f"INSERT OVERWRITE TABLE {staging_table} SELECT * FROM {source_fqn}")
         changed = True
@@ -74,14 +87,23 @@ def stage_table_incremental(cur, source_table, staging_table, watermark_column):
     # Wasserzeichen NUR bei tatsaechlicher Verarbeitung fortschreiben:
     # record_state ist ein Upsert mit frischem recorded_at (s. etl_state.py) -
     # ein Update pro unveraendertem Lauf wuerde "zuletzt verarbeitet"
-    # verfaelschen (should_skip_target_build in Stufe 3 vergleicht diese
-    # Zeitstempel). Bei changed=False bleibt der bisherige Eintrag korrekt
-    # der aktuelle Stand.
+    # verfaelschen. Bei changed=False bleibt der bisherige Eintrag bestehen;
+    # nur ein gewechselter Fingerprint OHNE neue Zeilen (z.B. Compaction der
+    # Quelle) wird fortgeschrieben, damit Ebene 1 beim naechsten Lauf wieder
+    # greift (Wasserzeichen bleibt dabei erhalten).
     if changed:
         cur.execute(f"SELECT MAX({watermark_column}) FROM {source_fqn}")
         new_watermark = cur.fetchone()[0]
         if new_watermark is not None:
-            record_state(cur, "staging", source_table, watermark_value=new_watermark)
+            record_state(
+                cur, "staging", source_table,
+                watermark_value=new_watermark, table_fingerprint=source_fp,
+            )
+    elif source_fp is not None and state is not None and state["table_fingerprint"] != source_fp:
+        record_state(
+            cur, "staging", source_table,
+            watermark_value=watermark, table_fingerprint=source_fp,
+        )
 
     cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
     return cur.fetchone()[0], changed
@@ -97,16 +119,43 @@ def stage_table_snapshot(cur, source_table, staging_table):
     halb geladenen Zwischenstand).
     """
     source_fqn = f"{SOURCE_DATABASE}.{source_table}"
+    state = get_latest_state(cur, "staging", source_table)
+
+    # Ebene 1 (s. etl_state.py): Ganztabellen-Fingerprint der Quelle - reine
+    # Metadaten-Abfrage statt des vollen Pruefsummen-Scans. Nur bei
+    # Fingerprint-Wechsel (oder Nicht-Iceberg-Quelle -> None) geht es
+    # runter auf Ebene 2 (content_signature ueber alle Zeilen).
+    source_fp = table_fingerprint(cur, source_fqn)
+    if (
+        source_fp is not None
+        and state is not None
+        and state["table_fingerprint"] == source_fp
+    ):
+        cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
+        return cur.fetchone()[0], False
+
     columns = get_columns(cur, source_fqn)
     row_count_source, content_hash = content_signature(cur, source_fqn, columns)
 
-    state = get_latest_state(cur, "staging", source_table)
     if state and state["content_hash"] == content_hash:
+        # Inhaltlich unveraendert, nur der Fingerprint ist gewechselt (z.B.
+        # Compaction der Quelle) -> Fingerprint fortschreiben, damit Ebene 1
+        # beim naechsten Lauf wieder ohne Zeilen-Scan greift.
+        if source_fp is not None and state["table_fingerprint"] != source_fp:
+            record_state(
+                cur, "staging", source_table,
+                content_hash=content_hash, row_count=state["row_count"],
+                table_fingerprint=source_fp,
+            )
         cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
         return cur.fetchone()[0], False
 
     cur.execute(f"INSERT OVERWRITE TABLE {staging_table} SELECT * FROM {source_fqn}")
-    record_state(cur, "staging", source_table, content_hash=content_hash, row_count=row_count_source)
+    record_state(
+        cur, "staging", source_table,
+        content_hash=content_hash, row_count=row_count_source,
+        table_fingerprint=source_fp,
+    )
 
     cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
     return cur.fetchone()[0], True
