@@ -37,6 +37,9 @@ with DAG(
     schedule_interval="0 5 * * *",  # taeglich 05:00 UTC; dank Fingerprint-Skip sind Leerlaeufe billig
     start_date=datetime(2026, 7, 1),
     catchup=False,
+    # Airflow legt neue DAGs standardmaessig pausiert an; in der CDE-Airflow-UI
+    # laesst sich der Toggle nicht immer bedienen - deshalb aktiv erzeugen.
+    is_paused_upon_creation=False,
     max_active_runs=1,  # Laeufe nie ueberlappen lassen (eine Pipeline, ein Zustand)
     default_args=default_args,
     tags=["gruppe3", "data-mesh", "iceberg"],
