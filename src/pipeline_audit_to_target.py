@@ -263,9 +263,33 @@ BUNDESLAND_NAMEN = {
 }
 
 
+def promote_stadtstaat_id(df, id_col):
+    """Input: DataFrame, Name der Schluesselspalte (id bzw. kreis_id).
+    Output: DataFrame, in dem der 2-stellige Stadtstaat-Landesschluessel auf den
+    kanonischen 5-stelligen Kreisschluessel gehoben ist (11 -> 11000 Berlin,
+    02 -> 02000 Hamburg); alle anderen Werte bleiben unveraendert.
+
+    HINTERGRUND: Berlin und Hamburg werden in der Quelle NUR mit ihrem
+    2-stelligen Landesschluessel gefuehrt (Land = Stadt = Kreis in einem);
+    einen eigenen 5-stelligen Kreisschluessel gibt es nicht, ihre Untereinheiten
+    sind die 12 bzw. 7 Bezirke mit 8-stelligem Schluessel. Ohne diese Korrektur
+    wuerde der nachgelagerte LENGTH == 5-Filter (der die 2-stelligen
+    Bundesland-Aggregate und die 8-stelligen Bezirke entfernt) Berlin und
+    Hamburg KOMPLETT verwerfen - sie fehlten dann in dim_kreis, beiden
+    Basis-Fakten und im KPI-Fakt. Muss daher VOR dem LENGTH == 5-Filter laufen.
+    Bremen (04) braucht das NICHT: es hat echte 5-stellige Kreise (04011 Bremen,
+    04012 Bremerhaven), sein 2-stelliges Aggregat bleibt korrekt gefiltert."""
+    return df.withColumn(
+        id_col,
+        F.when(F.col(id_col) == "11", F.lit("11000"))
+        .when(F.col(id_col) == "02", F.lit("02000"))
+        .otherwise(F.col(id_col)),
+    )
+
+
 def build_dim_kreis(spark):
     """Input: gruppe3_audit_bevoelkerungzahlen. Output: DataFrame dim_kreis."""
-    bev = read_table(spark, "gruppe3_audit_bevoelkerungzahlen")
+    bev = promote_stadtstaat_id(read_table(spark, "gruppe3_audit_bevoelkerungzahlen"), "id")
 
     bundesland_expr = F.create_map([F.lit(x) for kv in BUNDESLAND_NAMEN.items() for x in kv])
 
@@ -352,7 +376,9 @@ def build_dim_gemeinde(spark, dim_kreis):
 def build_fact_bevoelkerung(spark):
     """Input: gruppe3_audit_bevoelkerungzahlen (92 Spalten, 1 Zeile/Kreis).
     Output: DataFrame fact_bevoelkerung (1 Zeile/Kreis+Jahr, per explode/array unpivotiert)."""
-    bev = read_table(spark, "gruppe3_audit_bevoelkerungzahlen").filter(F.length("id") == 5)
+    bev = promote_stadtstaat_id(
+        read_table(spark, "gruppe3_audit_bevoelkerungzahlen"), "id"
+    ).filter(F.length("id") == 5)
 
     jahres_structs = [
         F.struct(
@@ -390,7 +416,9 @@ def build_fact_bevoelkerung(spark):
 def build_fact_bauland(spark):
     """Input: gruppe3_audit_bauland (4 Merkmale je Kreis+Jahr, lange Form).
     Output: DataFrame fact_bauland (pivotiert: je 1 Spalte pro Merkmal)."""
-    bauland = read_table(spark, "gruppe3_audit_bauland").filter(F.length("kreis_id") == 5)
+    bauland = promote_stadtstaat_id(
+        read_table(spark, "gruppe3_audit_bauland"), "kreis_id"
+    ).filter(F.length("kreis_id") == 5)
 
     kategorisiert = bauland.withColumn(
         "kategorie",

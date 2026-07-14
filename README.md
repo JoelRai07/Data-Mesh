@@ -480,9 +480,9 @@ Pause-Toggle in der CDE-Airflow-UI nicht zuverlässig bedienen ließ.
 2. Einmal Stufe 3 mit erzwungenem Build laufen lassen
    (`--conf spark.kubernetes.driverEnv.FORCE_TARGET_BUILD=1` temporär in die
    Job-Config): Zeilenzahlen müssen dem letzten lokalen Rebuild entsprechen
-   (dim_kreis 472, dim_jahr 30, dim_klimastadt 81, dim_gemeinde 10947,
-   fact_bevoelkerung 14110, fact_bauland 4720, fact_klima 1539,
-   fact_gemeinde_stamm 10947, fact_standortprofil_kpi 4099).
+   (dim_kreis 474, dim_jahr 30, dim_klimastadt 81, dim_gemeinde 10947,
+   fact_bevoelkerung 14170, fact_bauland 4740, fact_klima 1539,
+   fact_gemeinde_stamm 10947, fact_standortprofil_kpi 4119).
 3. Danach den DAG einmal komplett manuell triggern — Stufe 4 muss
    „32 Checks OK" melden.
 
@@ -664,16 +664,16 @@ liest einen früheren Stand (Time Travel).
 
 | Dimensionen | Fakten |
 |---|---|
-| `gruppe3_dim_kreis` (472) | `gruppe3_fact_bevoelkerung` (14.110, 1995–2024) |
-| `gruppe3_dim_jahr` (30, lückenlos 1995–2024) | `gruppe3_fact_bauland` (4.720, 2015–2024) |
+| `gruppe3_dim_kreis` (474) | `gruppe3_fact_bevoelkerung` (14.170, 1995–2024) |
+| `gruppe3_dim_jahr` (30, lückenlos 1995–2024) | `gruppe3_fact_bauland` (4.740, 2015–2024) |
 | `gruppe3_dim_gemeinde` (10.947, Brücke Kreis↔Stadt) | `gruppe3_fact_klima` (1.539, 1995–2013) |
 | `gruppe3_dim_klimastadt` (81) | `gruppe3_fact_gemeinde_stamm` (10.947) |
-|  | `gruppe3_fact_standortprofil_kpi` (4.099, 2015–2024) — die dashboard-fertigen Cross-Table-KPIs |
+|  | `gruppe3_fact_standortprofil_kpi` (4.119, 2015–2024) — die dashboard-fertigen Cross-Table-KPIs |
 
-Gefüllte Werte in `fact_standortprofil_kpi` (von 4.099): `wohnraumdruck_index`
-3.914 · `baulandpreis_pro_kopf_eur` 3.929 · `freiflaeche_pro_einwohner_qm`
-3.929 · `klima_angepasstes_wohnraumrisiko` 3.914 · `verstaedterung_index`
-3.430 · `standortattraktivitaets_score` 3.911. NULL bedeutet immer: mindestens
+Gefüllte Werte in `fact_standortprofil_kpi` (von 4.119): `wohnraumdruck_index`
+3.934 · `baulandpreis_pro_kopf_eur` 3.949 · `freiflaeche_pro_einwohner_qm`
+3.949 · `klima_angepasstes_wohnraumrisiko` 3.934 · `verstaedterung_index`
+3.450 · `standortattraktivitaets_score` 3.931. NULL bedeutet immer: mindestens
 eine Eingangsgröße fehlt (amtlich unterdrückt / kein Vorjahr / kein
 Klima-Match) — dokumentierte Aussage, kein Fehler.
 
@@ -728,6 +728,20 @@ Konsumenten greifen darauf über denselben Impala-Endpoint zu wie die Pipeline
 - **Englische Städtenamen** der Klimadaten (Munich→Muenchen …) gemappt,
   **Kompass-Koordinaten** („5.63S" → „-5,63") normalisiert, Filter auf
   `country = 'Germany'`.
+- **Stadtstaaten Berlin & Hamburg (5-stelliger Kreisschlüssel ergänzt):** Die
+  Quelle führt Berlin und Hamburg **nur** mit ihrem 2-stelligen Landesschlüssel
+  (`11` / `02`) — einen eigenen 5-stelligen Kreisschlüssel gibt es nicht, ihre
+  Untereinheiten sind die 8-stelligen Bezirke. Stufe 3 filtert aber bewusst auf
+  `LENGTH(id) == 5` (um die Bundesland-Aggregate und Bezirke zu entfernen) — das
+  hat Berlin und Hamburg zuvor **komplett verworfen** (fehlten in `dim_kreis`,
+  beiden Basis-Fakten und im KPI-Fakt; nur 14 statt 16 Bundesländer im Produkt).
+  Fix: `promote_stadtstaat_id()` in
+  [pipeline_audit_to_target.py](src/pipeline_audit_to_target.py) hebt `11`→`11000`
+  (Berlin) und `02`→`02000` (Hamburg) **vor** dem Längen-Filter auf den
+  kanonischen Kreisschlüssel; Bremen (`04`) bleibt unangetastet, da es echte
+  5-stellige Kreise (`04011`/`04012`) hat. Verifiziert: `dim_kreis` **474** (16
+  Bundesländer), KPI-Fakt **4.119** Zeilen mit Werten für `11000`/`02000`,
+  Contract-Gate 32/32 OK (14.07.2026).
 - **Nicht behebbar, daher im Data Contract dokumentiert:** amtlich unterdrückte
   Werte, Flächen-Rundung auf 0 (748 Zeilen), Klimadaten nur bis 2013, das beim
   Quellimport zerstörte Merkmal „Durchschnittlicher Kaufwert je qm". Alle
