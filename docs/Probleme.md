@@ -14,13 +14,18 @@ Data Contract dokumentiert) und die noch offenen Punkte.
 | P1 | `standortattraktivitaets_score` komplett NULL (0 von 4.720 Zeilen) | Division-durch-0 → Infinity vergiftete die Window-Aggregate; `safe_div()` + Klima-`coalesce(…, 0)` | [Fallstudie 1](#fallstudie-1-score-spalte-komplett-null-p1) |
 | P2 | Encoding: `L�beck` & Co. (U+FFFD) in Bauland + Bevölkerung | Laufzeit-Erkennung + automatische Auflösung über Referenzlisten; 0 Reste verifiziert | [Fallstudie 2](#fallstudie-2-zerstörte-umlaute-p2), [ADR-6](ADR.md) |
 | P3 | Alle Gemeinde-Koordinaten NULL → Klima-Brücke tot | Zerstörte `gruppe3`-Kopie ersetzt durch intakte `default.project_gemeinden` + Dezimalkomma-Parsing | [Fallstudie 1](#zweite-ursache-koordinaten-durch-csv-bug-zerstört-p3) |
-| P4 | 6 Spark-/JDBC-Stolpersteine (JDK, winutils, Dialekt, VPN, NULL-Binding, explode) | je ein eigener Workaround | [Fallstudie 3](#fallstudie-3-die-6-sparkjdbc-stolpersteine-p4) |
+| P4 | 5 Spark-/JDBC-Stolpersteine (winutils, JDBC-Dialekt, VPN, NULL-Binding, explode) | je ein eigener Workaround | [Fallstudie 3](#fallstudie-3-die-sieben-sparkjdbc-stolpersteine-p4-p7-p9) |
 | P5 | `kaufwert_je_qm_eur` enthält nur 0/NULL | **Nicht behebbar** (ab Quelle zerstört) → im Contract „NICHT VERWENDEN", Ersatz `preis_pro_qm_eur` | [Nicht behebbar](#nicht-behebbare-einschränkungen) |
 | P6 | APScheduler-Crash beim Loggen von `next_run_time` | Zeit direkt vom Trigger erfragen statt vom Job | [Fallstudie 4](#fallstudie-4-apscheduler-next_run_time-p6) |
 | P7 | Cloudera-JDBC „Error converting value to double" (`per_km2`, `area_km2`) | Spalten als STRING lesen (`customSchema`) bzw. Dichte selbst berechnen | [Fallstudie 3](#stolperstein-7-error-converting-value-to-double-p7) |
 | P8 | Zeilengenauer Merge für `gemeinden` erkannte Phantom-Änderungen | NULL-Keys kollabieren in `CONCAT_WS`; kein stabiler NULL-freier Schlüssel → bewusst Tabellen-Prüfsumme | [ADR-8](ADR.md) |
 | P9 | Spark scheitert an System-JDK ≥ 23/24 (`getSubject is not supported`) | `JAVA_HOME_JDK17` vor dem `pyspark`-Import selbst setzen | [Fallstudie 3](#stolperstein-1-keinfalsches-java-p9), [ADR-16](ADR.md) |
 | P10 | Neuer Airflow-DAG in CDE startete pausiert; der Pause-Toggle in der CDE-Airflow-UI ließ sich nicht zuverlässig bedienen | `is_paused_upon_creation=False` im DAG — er wird direkt aktiv erzeugt, ohne UI-Interaktion | [ADR-17](ADR.md) |
+| P11 | Berlin & Hamburg fehlten komplett im Datenprodukt (nur 14 von 16 Bundesländern) | Quelle führt beide nur mit 2-stelligem Landesschlüssel; `promote_stadtstaat_id()` hebt `11`→`11000` / `02`→`02000` **vor** dem `LENGTH == 5`-Filter in Stufe 3 | [README → Datenqualität](../README.md) |
+
+*Zeilenzahlen in den Fallstudien = Stand zum Zeitpunkt des jeweiligen Fixes;
+der Zuschnitt des KPI-Fakts hat sich seither geändert (u. a. durch P11) —
+aktueller Stand: 4.119 Zeilen, s. [README → Das Datenprodukt](../README.md).*
 
 ---
 
@@ -74,6 +79,8 @@ und parst das deutsche Dezimalkomma per `regexp_replace(col, ",", ".")`.
 
 **Ergebnis (verifiziert):** 3.911 von 4.099 KPI-Zeilen haben einen Score
 (vorher: 0). Die verbleibenden NULLs sind echte, dokumentierte Lücken (s. unten).
+*(Stand dieses Fixes; nach dem Berlin/Hamburg-Fix vom 14.07.2026 sind es
+3.931 von 4.119 — s. README „Das Datenprodukt".)*
 
 ### Folgefehler: `per_km2` bricht den Spark-JDBC-Read ab (P7)
 
@@ -124,10 +131,11 @@ verwenden; englische Städtenamen der Klimadaten werden gemappt
 
 ---
 
-## Fallstudie 3: Die 6 Spark/JDBC-Stolpersteine (P4)
+## Fallstudie 3: Die sieben Spark/JDBC-Stolpersteine (P4, P7, P9)
 
-Alle beim Aufsetzen der Spark-Stufe ([src/pipeline_audit_to_target.py](../src/pipeline_audit_to_target.py))
-aufgetreten. Die große Lektion: **Spark eignet sich hervorragend zum
+Alle sieben beim Aufsetzen der Spark-Stufe ([src/pipeline_audit_to_target.py](../src/pipeline_audit_to_target.py))
+aufgetreten (Stolperstein 1 = P9, Stolperstein 7 = P7, die übrigen fünf sind
+als P4 zusammengefasst). Die große Lektion: **Spark eignet sich hervorragend zum
 Lesen/Transformieren, aber Impala ist kein robustes Schreib-Ziel für
 Spark-JDBC-Writes** — daher der Hybrid-Ansatz (Spark liest/rechnet, impyla
 schreibt; [ADR-5](ADR.md)).

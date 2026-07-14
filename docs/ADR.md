@@ -167,4 +167,4 @@ Ein billiger `content_signature()`-Vor-Check verhindert, dass DELETE+MERGE an Ta
 ## Gelöste Probleme & offene Punkte
 
 Bewusst **nicht** hier dupliziert → [Probleme.md](Probleme.md) ist die einzige
-Problemliste (P1–P10 mit Fallstudien, nicht behebbare Einschränkungen, offene Punkte).
+Problemliste (P1–P11 mit Fallstudien, nicht behebbare Einschränkungen, offene Punkte).

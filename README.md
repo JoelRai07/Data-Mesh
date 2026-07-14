@@ -34,6 +34,22 @@ Die vier abgegebenen Arbeitsergebnisse:
 | 3. Data Contract + technische Durchsetzung | [data/data_contract.yaml](data/data_contract.yaml), [data/output_port_ddl.sql](data/output_port_ddl.sql), [src/contract_check.py](src/contract_check.py) |
 | 4. README (dieses Dokument) | – |
 
+**Inhalt:**
+[Architektur](#architektur-der-datenfluss) ·
+[Datenmodell](#datenmodell--begründung) ·
+[Incremental Loading](#incremental-loading-wie-die-pipeline-änderungen-erkennt) ·
+[Projektstruktur](#projektstruktur) ·
+[Lese-Reihenfolge](#wie-liest-man-den-code) ·
+[Einrichtung](#einrichtung-einmalig) ·
+[Benutzung](#benutzung) ·
+[Docker](#docker) ·
+[Betriebsarten & CDE](#zwei-betriebsarten-lokal-docker-und-cloudera-data-engineering) ·
+[Datenbank & Datenprodukt](#datenbank-gruppe3-auf-impala) ·
+[Output Port](#datenprodukt-konsumieren-output-port) ·
+[Datenqualität](#datenqualität-was-bereinigt-wurde-kurzfassung) ·
+[Prüfungswissen](#prüfungswissen-kompakt) ·
+[Stand](#stand)
+
 ## Architektur: der Datenfluss
 
 ```
@@ -74,8 +90,95 @@ schleusen. Spark wird dort eingesetzt, wo es echten Mehrwert hat: Unpivot per
 `explode(array(struct(…)))`, echtes `DataFrame.pivot()` und Window-Aggregate
 (`STDDEV() OVER` für den z-Score — in Impala-SQL nicht möglich).
 
-**Wie funktioniert das Incremental Loading?** Den zuletzt verarbeiteten Stand
-merkt sich die Pipeline in `gruppe3_etl_state` (Iceberg, ein Eintrag je
+Wie die Pipeline dabei unveränderte Quellen erkennt und überspringt, erklärt
+der Abschnitt [Incremental Loading](#incremental-loading-wie-die-pipeline-änderungen-erkennt)
+— er folgt direkt auf das Datenmodell: erst das Ziel, dann die Lade-Mechanik.
+
+## Datenmodell & Begründung
+
+### Ausgangslage: vier Quelltabellen
+
+| Quelle (`default.*`) | Ebene | Verknüpfungs-Schlüssel | Format / Besonderheit |
+|---|---|---|---|
+| `project_bevoelkerungzahlen` | Kreis | `id` (Regionalschlüssel) | **breit** (92 Spalten: 3 je Jahr 1995–2024); kaputte Umlaute (`�`) |
+| `project_bauland` | Kreis | `kreis_id` (Regionalschlüssel) | **lang** (1 Zeile je Merkmal, 21.600 Zeilen); kaputte Umlaute; 4. Merkmal ab Quelle zerstört |
+| `project_gemeinden` | Gemeinde | nur Name (kein Schlüssel), `latitude`/`longitude` | CSV-Parsing-Schäden, 10.950 Zeilen |
+| `project_klimadaten` | Stadt (weltweit) | nur Stadtname, `latitude`/`longitude` | 8,6 Mio. Zeilen, endet 2013; Kompass-Koordinaten („53.84N") |
+
+**Zentrale Erkenntnis 1:** `bevoelkerung.id` und `bauland.kreis_id` sind derselbe
+**amtliche Regionalschlüssel** (z. B. `01001` = Flensburg). Sie matchen exakt
+(472 Kreise, live geprüft) und sind hierarchisch: die ersten 2 Stellen kodieren
+das Bundesland (`01` = Schleswig-Holstein). → Der natürliche
+Integrationsschlüssel auf Kreis-Ebene. (Im fertigen `dim_kreis` stehen **474**
+Kreise: Berlin und Hamburg führen in der Quelle nur ihren 2-stelligen
+Landesschlüssel und werden erst in Stufe 3 auf `11000`/`02000` gehoben — s.
+[Datenqualität](#datenqualität-was-bereinigt-wurde-kurzfassung).)
+
+**Zentrale Erkenntnis 2:** `project_gemeinden` und `project_klimadaten` lassen
+sich über die Gemeinde-Ebene verbinden: Nach der Bereinigung in Stufe 2
+(Transliteration ä→ae/…, englische Exonyme „Munich"→„Muenchen" gemappt) liegen
+Gemeindenamen und Klimastadt-Namen im **selben Format** vor → **exakter
+Namens-Match** (deterministisch, trifft 74 von 81 deutschen Klimastädten).
+`dim_gemeinde` wird damit zur **Brücken-Dimension**, die Kreis-Ebene
+(Bevölkerung/Bauland) und Stadt-Ebene (Klima) verbindet — alle vier Quellen
+sind in **einem** Modell nutzbar, nicht nur isoliert nebeneinander.
+
+### Gewähltes Modell: Star-/Galaxy-Schema (4 Dimensionen + 5 Fakten)
+
+```
+dim_kreis ──< fact_bevoelkerung   >── dim_jahr
+dim_kreis ──< fact_bauland        >── dim_jahr
+dim_kreis ──< dim_gemeinde ──< fact_gemeinde_stamm
+dim_gemeinde ──(Namens-Match, transliteriert)──> dim_klimastadt ──< fact_klima >── dim_jahr
+dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.g. Fakten)
+```
+
+Genau genommen ein **Galaxy-Schema**: mehrere Faktentabellen teilen sich die
+Dimensionen `dim_kreis` und `dim_jahr` (conformed dimensions); jede
+Faktentabelle + ihre Dimensionen = ein Stern.
+
+### Warum so? (die Begründung)
+
+1. **Star-Schema statt normalisiert (3. NF).** Analytische (OLAP-)Systeme lesen
+   Aggregate über viele Zeilen; normalisierte Modelle erzwingen viele Joins →
+   komplexe, langsame, in der Cloud teure Abfragen. Die Dimensionen sind
+   **denormalisiert** (z. B. Bundesland direkt in `dim_kreis`).
+2. **Regionalschlüssel als conformed dimension.** `dim_kreis` verbindet
+   `fact_bevoelkerung` und `fact_bauland` exakt — Data-Mesh-Gedanke: Mehrwert
+   durch *Interconnecting*.
+3. **`dim_gemeinde` als zweite conformed dimension (Brücke).** Ohne sie bliebe
+   das Klima isoliert (kein Regionalschlüssel): Namens-Match gegen
+   `dim_kreis.kreis_name` (Kreis-Anbindung) und gegen
+   `dim_klimastadt.stadt_name` (Klima-Anbindung).
+4. **Unpivot der Bevölkerungsdaten (breit → lang).** Aus 1 Spalte pro Jahr wird
+   1 Zeile je Kreis+Jahr — `jahr` wird echte Dimension, Zeitreihen-Analysen
+   trivial. In Spark per `explode(array(struct(…)))`.
+5. **Pivot der Baulanddaten (lang → breit).** Aus 1 Zeile je Merkmal wird
+   1 Spalte je Merkmal (alle 4: Fälle, Fläche, Kaufsumme, amtl. Kaufwert) —
+   genau **eine** Faktenzeile je Kreis+Jahr. In Spark per `DataFrame.pivot()`.
+6. **KPI-Spalten direkt in den Basisfakten**, wo sie aus derselben Zeile
+   berechenbar sind (z. B. `preis_pro_qm_eur`) — statt bei jeder Abfrage neu.
+7. **`fact_standortprofil_kpi` als aggregierter Cross-Table-Fakt.** Kennzahlen,
+   die den Join mehrerer Fakten erfordern (`wohnraumdruck_index`,
+   `standortattraktivitaets_score`), werden einmal in der Pipeline vorberechnet
+   und dashboard-fertig auf Kreis × Jahr gespeichert.
+8. **Parquet** (spaltenorientiert) für alle Zieltabellen → ideal für OLAP
+   („data skipping", nur benötigte Spalten werden gelesen).
+9. **Bewusste Abgrenzung:** Die Namens-Matches sind fehlerbehaftet und **ehrlich
+   im Data Contract dokumentiert** (97,5 % Kreis-Coverage, 74/81 Klimastädte) —
+   Data-Mesh-Prinzip „Federated Governance": Qualität beschreiben statt verschweigen.
+
+### Idempotenz
+
+Alle DDLs nutzen `CREATE TABLE IF NOT EXISTS`; die Befüllung ist inkrementell
+(Wasserzeichen-Append, Key-Merge bzw. `INSERT OVERWRITE` nur bei echter
+Änderung). Mehrfaches Ausführen erzeugt keine Duplikate — ein zweiter Lauf
+direkt nach dem ersten meldet überall „übersprungen" (Stufe 1+2 live verifiziert am 10.07.2026;
+der komplette Zwei-Läufe-Test inkl. Stufe 3 steht noch aus, s. [Stand](#stand)).
+
+## Incremental Loading: wie die Pipeline Änderungen erkennt
+
+Den zuletzt verarbeiteten Stand merkt sich die Pipeline in `gruppe3_etl_state` (Iceberg, ein Eintrag je
 Stufe+Tabelle, per `MERGE INTO` geupsertet; die Verlaufs-Historie liegt in den
 Iceberg-Snapshots — s. [src/etl_state.py](src/etl_state.py)).
 
@@ -114,8 +217,8 @@ Quelltabellen in `default.*` (kein Iceberg → kein verlässlicher
 Metadaten-Fingerprint → Prüfsummen-Scan als Fallback).
 
 Die fachlichen Begründungen stehen ausführlich in den Modul-Docstrings der
-jeweiligen Skripte; die Iceberg-Entscheidung inkl. der live verifizierten
-Verifikation in [docs/ADR.md](docs/ADR.md) (ADR-13).
+jeweiligen Skripte; die Iceberg-Entscheidung inkl. Live-Verifikation in
+[docs/ADR.md](docs/ADR.md) (ADR-13).
 
 ## Projektstruktur
 
@@ -197,85 +300,6 @@ Modul-Docstring am Dateianfang):
    Verstoß mit Exit-Code 1 ab.
 10. **[src/scheduler.py](src/scheduler.py)** – täglicher Batch-Trigger um 00:00.
 
-## Datenmodell & Begründung
-
-### Ausgangslage: vier Quelltabellen
-
-| Quelle (`default.*`) | Ebene | Verknüpfungs-Schlüssel | Format / Besonderheit |
-|---|---|---|---|
-| `project_bevoelkerungzahlen` | Kreis | `id` (Regionalschlüssel) | **breit** (92 Spalten: 3 je Jahr 1995–2024); kaputte Umlaute (`�`) |
-| `project_bauland` | Kreis | `kreis_id` (Regionalschlüssel) | **lang** (1 Zeile je Merkmal, 21.600 Zeilen); kaputte Umlaute; 4. Merkmal ab Quelle zerstört |
-| `project_gemeinden` | Gemeinde | nur Name (kein Schlüssel), `latitude`/`longitude` | CSV-Parsing-Schäden, 10.950 Zeilen |
-| `project_klimadaten` | Stadt (weltweit) | nur Stadtname, `latitude`/`longitude` | 8,6 Mio. Zeilen, endet 2013; Kompass-Koordinaten („53.84N") |
-
-**Zentrale Erkenntnis 1:** `bevoelkerung.id` und `bauland.kreis_id` sind derselbe
-**amtliche Regionalschlüssel** (z. B. `01001` = Flensburg). Sie matchen exakt
-(472 Kreise, live geprüft) und sind hierarchisch: die ersten 2 Stellen kodieren
-das Bundesland (`01` = Schleswig-Holstein). → Der natürliche
-Integrationsschlüssel auf Kreis-Ebene.
-
-**Zentrale Erkenntnis 2:** `project_gemeinden` und `project_klimadaten` lassen
-sich über die Gemeinde-Ebene verbinden: Nach der Bereinigung in Stufe 2
-(Transliteration ä→ae/…, englische Exonyme „Munich"→„Muenchen" gemappt) liegen
-Gemeindenamen und Klimastadt-Namen im **selben Format** vor → **exakter
-Namens-Match** (deterministisch, trifft 74 von 81 deutschen Klimastädten).
-`dim_gemeinde` wird damit zur **Brücken-Dimension**, die Kreis-Ebene
-(Bevölkerung/Bauland) und Stadt-Ebene (Klima) verbindet — alle vier Quellen
-sind in **einem** Modell nutzbar, nicht nur isoliert nebeneinander.
-
-### Gewähltes Modell: Star-/Galaxy-Schema (4 Dimensionen + 5 Fakten)
-
-```
-dim_kreis ──< fact_bevoelkerung   >── dim_jahr
-dim_kreis ──< fact_bauland        >── dim_jahr
-dim_kreis ──< dim_gemeinde ──< fact_gemeinde_stamm
-dim_gemeinde ──(Namens-Match, transliteriert)──> dim_klimastadt ──< fact_klima >── dim_jahr
-dim_kreis ──< fact_standortprofil_kpi >── dim_jahr   (verdichtet alle o.g. Fakten)
-```
-
-Genau genommen ein **Galaxy-Schema**: mehrere Faktentabellen teilen sich die
-Dimensionen `dim_kreis` und `dim_jahr` (conformed dimensions); jede
-Faktentabelle + ihre Dimensionen = ein Stern.
-
-### Warum so? (die Begründung)
-
-1. **Star-Schema statt normalisiert (3. NF).** Analytische (OLAP-)Systeme lesen
-   Aggregate über viele Zeilen; normalisierte Modelle erzwingen viele Joins →
-   komplexe, langsame, in der Cloud teure Abfragen. Die Dimensionen sind
-   **denormalisiert** (z. B. Bundesland direkt in `dim_kreis`).
-2. **Regionalschlüssel als conformed dimension.** `dim_kreis` verbindet
-   `fact_bevoelkerung` und `fact_bauland` exakt — Data-Mesh-Gedanke: Mehrwert
-   durch *Interconnecting*.
-3. **`dim_gemeinde` als zweite conformed dimension (Brücke).** Ohne sie bliebe
-   das Klima isoliert (kein Regionalschlüssel): Namens-Match gegen
-   `dim_kreis.kreis_name` (Kreis-Anbindung) und gegen
-   `dim_klimastadt.stadt_name` (Klima-Anbindung).
-4. **Unpivot der Bevölkerungsdaten (breit → lang).** Aus 1 Spalte pro Jahr wird
-   1 Zeile je Kreis+Jahr — `jahr` wird echte Dimension, Zeitreihen-Analysen
-   trivial. In Spark per `explode(array(struct(…)))`.
-5. **Pivot der Baulanddaten (lang → breit).** Aus 1 Zeile je Merkmal wird
-   1 Spalte je Merkmal (alle 4: Fälle, Fläche, Kaufsumme, amtl. Kaufwert) —
-   genau **eine** Faktenzeile je Kreis+Jahr. In Spark per `DataFrame.pivot()`.
-6. **KPI-Spalten direkt in den Basisfakten**, wo sie aus derselben Zeile
-   berechenbar sind (z. B. `preis_pro_qm_eur`) — statt bei jeder Abfrage neu.
-7. **`fact_standortprofil_kpi` als aggregierter Cross-Table-Fakt.** Kennzahlen,
-   die den Join mehrerer Fakten erfordern (`wohnraumdruck_index`,
-   `standortattraktivitaets_score`), werden einmal in der Pipeline vorberechnet
-   und dashboard-fertig auf Kreis × Jahr gespeichert.
-8. **Parquet** (spaltenorientiert) für alle Zieltabellen → ideal für OLAP
-   („data skipping", nur benötigte Spalten werden gelesen).
-9. **Bewusste Abgrenzung:** Die Namens-Matches sind fehlerbehaftet und **ehrlich
-   im Data Contract dokumentiert** (97,5 % Kreis-Coverage, 74/81 Klimastädte) —
-   Data-Mesh-Prinzip „Federated Governance": Qualität beschreiben statt verschweigen.
-
-### Idempotenz
-
-Alle DDLs nutzen `CREATE TABLE IF NOT EXISTS`; die Befüllung ist inkrementell
-(Wasserzeichen-Append, Key-Merge bzw. `INSERT OVERWRITE` nur bei echter
-Änderung). Mehrfaches Ausführen erzeugt keine Duplikate — ein zweiter Lauf
-direkt nach dem ersten meldet überall „übersprungen" (End-to-End verifiziert,
-s. [Stand](#stand)).
-
 ## Einrichtung (einmalig)
 
 ```bash
@@ -315,12 +339,150 @@ mit einer klaren Fehlermeldung ab, falls sie doch auf eine nicht migrierte
 Tabelle trifft. Bei einer frisch zurückgesetzten Datenbank ist keine Migration
 nötig — alle Tabellen werden direkt als Iceberg angelegt.
 
+## Benutzung
+
+```bash
+# KOMPLETTER LAUF (empfohlen): Datenmodell + Stufe 1 → 2 → 3 + Contract-Gate
+.venv/Scripts/python.exe src/run_pipeline.py
+```
+
+Alle Schritte sind **idempotent**: beliebig oft ausführbar, keine Duplikate.
+Unveränderte Quellen werden erkannt und übersprungen — ein zweiter Lauf direkt
+nach dem ersten tut fast nichts (Stufe 1+2 live verifiziert, s. [Stand](#stand)).
+
+Die Stufen lassen sich auch einzeln ausführen (gleiche Reihenfolge):
+
+```bash
+.venv/Scripts/python.exe src/create_datamodel.py                # Zieltabellen anlegen
+.venv/Scripts/python.exe src/pipeline_default_to_staging.py     # Stufe 1
+.venv/Scripts/python.exe src/pipeline_staging_to_audit.py       # Stufe 2
+.venv/Scripts/python.exe src/pipeline_audit_to_target.py        # Stufe 3 (braucht JDK 17 + Treiber)
+.venv/Scripts/python.exe src/contract_check.py                  # Data-Contract-Gate gegen das Datenprodukt
+
+# Target-Rebuild erzwingen, wenn sich nur Code/Contract geändert hat, aber keine Audit-Daten
+$env:FORCE_TARGET_BUILD="1"; .venv/Scripts/python.exe src/pipeline_audit_to_target.py; Remove-Item Env:FORCE_TARGET_BUILD
+
+# Täglicher Lauf um 00:00 – läuft dauerhaft (lokale Betriebsart; nicht parallel zum CDE-DAG)
+.venv/Scripts/python.exe src/scheduler.py
+
+# Kompletter Reset der gruppe3-Tabellen (z.B. um Full Load vs. Skip zu testen)
+.venv/Scripts/python.exe src/utils/reset_database.py
+```
+
+Danach ist das Datenprodukt abfragbar. Beispiel-Queries, Spaltenbedeutungen
+und NULL-Semantik stehen im **[Data Contract](data/data_contract.yaml)**.
+Der letzte Schritt des Komplettlaufs erzwingt diesen Contract technisch:
+`src/contract_check.py` liest das YAML als Quelle der Wahrheit und prüft das
+veröffentlichte Datenprodukt live in Impala (aktuell 32 Checks).
+
+### Data Contract CLI
+
+Der benotete Data Contract ist `data/data_contract.yaml`. Die zusätzliche Datei
+`data/output_port_ddl.sql` dokumentiert das physische Output-Port-Schema und
+kann mit der Data Contract CLI als Generierungsbasis genutzt werden:
+
+```bash
+python -m pip install "datacontract-cli[impala]" packaging
+
+# Syntax/Schema des Contracts prüfen
+$env:PYTHONIOENCODING="utf-8"; datacontract lint data/data_contract.yaml
+
+# Contract aus den SQL-DDLs neu generieren/gegenprüfen
+datacontract import sql --source data/output_port_ddl.sql --dialect spark --output data/data_contract.generated.yaml
+
+# Contract gegen den Impala-Output-Port testen
+# Vorher in .env pflegen: DATACONTRACT_IMPALA_USERNAME, DATACONTRACT_IMPALA_PASSWORD,
+# DATACONTRACT_IMPALA_USE_SSL sowie im Contract host/port/database.
+$env:PYTHONIOENCODING="utf-8"; datacontract test --server production data/data_contract.yaml
+```
+
+Falls `datacontract test` in der DHBW-Umgebung mit `TSocket read 0 bytes`
+abbricht, liegt das am Impala-Transport der CLI: die Pipeline nutzt
+`IMPALA_HTTP_PATH`/HTTP-Transport über `impyla`, der CLI-Adapter dagegen nur
+`host`, `port`, `database`, Username und Passwort. In diesem Fall bleiben
+`datacontract lint` und `datacontract import sql` gültig; das Live-Gate gegen
+den konkreten DHBW-Output-Port läuft über `src/contract_check.py` — kein
+Ersatz für die CLI, sondern ein zusätzliches Pipeline-Gate, weil die Pipeline
+bereits über `impyla` gegen dieselbe Impala-Umgebung läuft.
+
+### Handgeschriebener Contract vs. CLI-generiertes Gerüst
+
+Zur Einordnung, was die CLI beiträgt (und was nicht), wurde der Contract am
+09.07.2026 testweise per `datacontract import sql` (CLI 1.0.10) aus
+`data/output_port_ddl.sql` neu generiert. Ergebnis: **das Schema stimmt 1:1
+mit unserem Contract überein** (9 Tabellen, alle Spalten und Typen) — mehr
+kann der Import aber prinzipbedingt nicht liefern, denn mehr steht nicht in
+einer DDL. Dieselbe Spalte im direkten Vergleich:
+
+```yaml
+# CLI-generiert (nur, was aus der DDL ableitbar ist):
+- name: kreis_id
+  physicalType: STRING
+  logicalType: string
+```
+
+```yaml
+# data/data_contract.yaml (fachlich angereichert):
+kreis_id:
+  type: string
+  required: true      # nie NULL
+  unique: true        # keine Duplikate
+  primaryKey: true
+  description: Amtlicher Regionalschlüssel, 5-stellig, z.B. '01001' (Flensburg).
+```
+
+| Bestandteil | CLI-Import | Manuell ergänzt |
+|---|---|---|
+| Tabellen, Spalten, Typen | ✓ automatisch, tippfehlerfrei aus der DDL | – |
+| Constraints (`required`/`primaryKey`/`unique`) | – | ✓ |
+| Spalten-Semantik inkl. Warnungen (z. B. `kaufwert_je_qm_eur`: „NICHT VERWENDEN") | – | ✓ |
+| `terms` (Join-Regeln, Transliteration, Surrogat-Warnung) | – | ✓ |
+| `servers` (erst damit ist `datacontract test` möglich) | – | ✓ |
+| `quality` (ausführbare SQLs + live gemessene Zahlen) | – | ✓ |
+| `examples`, `servicelevels`, Owner/Kontakt | – | ✓ |
+
+**Was der CLI-Workflow bringt:** (1) das mechanische Gerüst entsteht in
+Sekunden und ist per Konstruktion fehlerfrei, weil die DDL die Quelle der
+Wahrheit ist; (2) **Drift-Erkennung** — nach einer Schema-Änderung neu
+generieren und gegen den gepflegten Contract diffen, statt still zu
+veralten; (3) das Gerüst ist ab der ersten Zeile spezifikationskonform.
+Die Arbeitsteilung ist genau der empfohlene Weg „automatisiert erstellen,
+manuell ergänzen": die CLI liefert das *Was* (Schema), das Team den
+fachlichen Gehalt (*Wie nutzt man es korrekt, was ist garantiert, was ist
+kaputt*) — unser Contract entspricht dem Endzustand dieses Workflows.
+
+Hinweis: Die CLI exportiert beim Import standardmäßig das **ODCS**-Format
+(Open Data Contract Standard, `kind: DataContract`/`schema:`) — der zweite
+große Contract-Standard neben der hier genutzten **Data Contract
+Specification 1.1.0** (`models:`/`fields:`). Beide Standards konvergieren;
+`datacontract lint`/`test` verstehen beide.
+
+## Docker
+
+Der Container enthält Python, PySpark und JDK 17; die Impala-Datenbank bleibt
+extern (DHBW), Zugangsdaten kommen zur Laufzeit aus `.env` (nicht im Image).
+
+```bash
+docker compose build
+
+# Kompletter Pipeline-Lauf (run_pipeline.py, alle Stufen):
+docker compose run --rm pipeline
+
+# Dauerhafter lokaler Scheduler (nur, wenn der CDE-DAG nicht aktiv ist — s. „Zwei Betriebsarten"):
+docker compose up scheduler
+```
+
+**Wichtig — immer nur *einen* Dienst starten:** kein nacktes `docker compose up`
+(würde `pipeline` und `scheduler` gleichzeitig starten; beide schreiben in
+dieselben Tabellen und kämen sich ins Gehege).
+
 ## Zwei Betriebsarten: lokal (Docker) und Cloudera Data Engineering
 
 Die Pipeline läuft mit **demselben Code unter `src/`** in zwei Umgebungen:
 
-- **Lokal / Docker** (dieser README-Rest): `docker compose run --rm pipeline`
-  bzw. die `.venv`-Aufrufe unten. Spark läuft außerhalb des Clusters und
+- **Lokal / Docker** (s. [Benutzung](#benutzung) und [Docker](#docker) oben):
+  `docker compose run --rm pipeline` bzw. die `.venv`-Aufrufe dort. Spark
+  läuft außerhalb des Clusters und
   erreicht die Daten über den Impala-JDBC-Endpoint
   (`SPARK_IO_MODE=jdbc`, Default — braucht das JDBC-Jar, s. Einrichtung).
 - **CDE / Airflow** (produktiver Scheduler — **live seit 11.07.2026**): Der
@@ -497,143 +659,6 @@ Pause-Toggle in der CDE-Airflow-UI nicht zuverlässig bedienen ließ.
   Abweichungen `cde job create --help` konsultieren; das Setup selbst
   (Resources → Jobs → DAG) bleibt gleich.
 
-## Benutzung
-
-```bash
-# KOMPLETTER LAUF (empfohlen): Datenmodell + Stufe 1 → 2 → 3 + Contract-Gate
-.venv/Scripts/python.exe src/run_pipeline.py
-```
-
-Alle Schritte sind **idempotent**: beliebig oft ausführbar, keine Duplikate.
-Unveränderte Quellen werden erkannt und übersprungen — ein zweiter Lauf direkt
-nach dem ersten tut fast nichts (verifiziert, s. [Stand](#stand)).
-
-Die Stufen lassen sich auch einzeln ausführen (gleiche Reihenfolge):
-
-```bash
-.venv/Scripts/python.exe src/create_datamodel.py                # Zieltabellen anlegen
-.venv/Scripts/python.exe src/pipeline_default_to_staging.py     # Stufe 1
-.venv/Scripts/python.exe src/pipeline_staging_to_audit.py       # Stufe 2
-.venv/Scripts/python.exe src/pipeline_audit_to_target.py        # Stufe 3 (braucht JDK 17 + Treiber)
-.venv/Scripts/python.exe src/contract_check.py                  # Data-Contract-Gate gegen das Datenprodukt
-
-# Target-Rebuild erzwingen, wenn sich nur Code/Contract geändert hat, aber keine Audit-Daten
-$env:FORCE_TARGET_BUILD="1"; .venv/Scripts/python.exe src/pipeline_audit_to_target.py; Remove-Item Env:FORCE_TARGET_BUILD
-
-# Täglicher Lauf um 00:00 – läuft dauerhaft (lokale Betriebsart; nicht parallel zum CDE-DAG)
-.venv/Scripts/python.exe src/scheduler.py
-
-# Kompletter Reset der gruppe3-Tabellen (z.B. um Full Load vs. Skip zu testen)
-.venv/Scripts/python.exe src/utils/reset_database.py
-```
-
-Danach ist das Datenprodukt abfragbar. Beispiel-Queries, Spaltenbedeutungen
-und NULL-Semantik stehen im **[Data Contract](data/data_contract.yaml)**.
-Der letzte Schritt des Komplettlaufs erzwingt diesen Contract technisch:
-`src/contract_check.py` liest das YAML als Quelle der Wahrheit und prüft das
-veröffentlichte Datenprodukt live in Impala (aktuell 32 Checks).
-
-### Data Contract CLI
-
-Der benotete Data Contract ist `data/data_contract.yaml`. Die zusätzliche Datei
-`data/output_port_ddl.sql` dokumentiert das physische Output-Port-Schema und
-kann mit der Data Contract CLI als Generierungsbasis genutzt werden:
-
-```bash
-python -m pip install "datacontract-cli[impala]" packaging
-
-# Syntax/Schema des Contracts prüfen
-$env:PYTHONIOENCODING="utf-8"; datacontract lint data/data_contract.yaml
-
-# Contract aus den SQL-DDLs neu generieren/gegenprüfen
-datacontract import sql --source data/output_port_ddl.sql --dialect spark --output data/data_contract.generated.yaml
-
-# Contract gegen den Impala-Output-Port testen
-# Vorher in .env pflegen: DATACONTRACT_IMPALA_USERNAME, DATACONTRACT_IMPALA_PASSWORD,
-# DATACONTRACT_IMPALA_USE_SSL sowie im Contract host/port/database.
-$env:PYTHONIOENCODING="utf-8"; datacontract test --server production data/data_contract.yaml
-```
-
-Falls `datacontract test` in der DHBW-Umgebung mit `TSocket read 0 bytes`
-abbricht, liegt das am Impala-Transport der CLI: die Pipeline nutzt
-`IMPALA_HTTP_PATH`/HTTP-Transport über `impyla`, der CLI-Adapter dagegen nur
-`host`, `port`, `database`, Username und Passwort. In diesem Fall bleiben
-`datacontract lint` und `datacontract import sql` gültig; das Live-Gate gegen
-den konkreten DHBW-Output-Port läuft über `src/contract_check.py` — kein
-Ersatz für die CLI, sondern ein zusätzliches Pipeline-Gate, weil die Pipeline
-bereits über `impyla` gegen dieselbe Impala-Umgebung läuft.
-
-### Handgeschriebener Contract vs. CLI-generiertes Gerüst
-
-Zur Einordnung, was die CLI beiträgt (und was nicht), wurde der Contract am
-09.07.2026 testweise per `datacontract import sql` (CLI 1.0.10) aus
-`data/output_port_ddl.sql` neu generiert. Ergebnis: **das Schema stimmt 1:1
-mit unserem Contract überein** (9 Tabellen, alle Spalten und Typen) — mehr
-kann der Import aber prinzipbedingt nicht liefern, denn mehr steht nicht in
-einer DDL. Dieselbe Spalte im direkten Vergleich:
-
-```yaml
-# CLI-generiert (nur, was aus der DDL ableitbar ist):
-- name: kreis_id
-  physicalType: STRING
-  logicalType: string
-```
-
-```yaml
-# data/data_contract.yaml (fachlich angereichert):
-kreis_id:
-  type: string
-  required: true      # nie NULL
-  unique: true        # keine Duplikate
-  primaryKey: true
-  description: Amtlicher Regionalschlüssel, 5-stellig, z.B. '01001' (Flensburg).
-```
-
-| Bestandteil | CLI-Import | Manuell ergänzt |
-|---|---|---|
-| Tabellen, Spalten, Typen | ✓ automatisch, tippfehlerfrei aus der DDL | – |
-| Constraints (`required`/`primaryKey`/`unique`) | – | ✓ |
-| Spalten-Semantik inkl. Warnungen (z. B. `kaufwert_je_qm_eur`: „NICHT VERWENDEN") | – | ✓ |
-| `terms` (Join-Regeln, Transliteration, Surrogat-Warnung) | – | ✓ |
-| `servers` (erst damit ist `datacontract test` möglich) | – | ✓ |
-| `quality` (ausführbare SQLs + live gemessene Zahlen) | – | ✓ |
-| `examples`, `servicelevels`, Owner/Kontakt | – | ✓ |
-
-**Was der CLI-Workflow bringt:** (1) das mechanische Gerüst entsteht in
-Sekunden und ist per Konstruktion fehlerfrei, weil die DDL die Quelle der
-Wahrheit ist; (2) **Drift-Erkennung** — nach einer Schema-Änderung neu
-generieren und gegen den gepflegten Contract diffen, statt still zu
-veralten; (3) das Gerüst ist ab der ersten Zeile spezifikationskonform.
-Die Arbeitsteilung ist genau der empfohlene Weg „automatisiert erstellen,
-manuell ergänzen": die CLI liefert das *Was* (Schema), das Team den
-fachlichen Gehalt (*Wie nutzt man es korrekt, was ist garantiert, was ist
-kaputt*) — unser Contract entspricht dem Endzustand dieses Workflows.
-
-Hinweis: Die CLI exportiert beim Import standardmäßig das **ODCS**-Format
-(Open Data Contract Standard, `kind: DataContract`/`schema:`) — der zweite
-große Contract-Standard neben der hier genutzten **Data Contract
-Specification 1.1.0** (`models:`/`fields:`). Beide Standards konvergieren;
-`datacontract lint`/`test` verstehen beide.
-
-## Docker
-
-Der Container enthält Python, PySpark und JDK 17; die Impala-Datenbank bleibt
-extern (DHBW), Zugangsdaten kommen zur Laufzeit aus `.env` (nicht im Image).
-
-```bash
-docker compose build
-
-# Kompletter Pipeline-Lauf (run_pipeline.py, alle Stufen):
-docker compose run --rm pipeline
-
-# Dauerhafter lokaler Scheduler (nur, wenn der CDE-DAG nicht aktiv ist — s. „Zwei Betriebsarten"):
-docker compose up scheduler
-```
-
-**Wichtig — immer nur *einen* Dienst starten:** kein nacktes `docker compose up`
-(würde `pipeline` und `scheduler` gleichzeitig starten; beide schreiben in
-dieselben Tabellen und kämen sich ins Gehege).
-
 ## Datenbank `gruppe3` auf Impala
 
 **Quellen (Datenbank `default`, nur lesend):**
@@ -660,7 +685,8 @@ partitioniert. Jeder Schreibvorgang ist ein Iceberg-Snapshot — `DESCRIBE
 HISTORY <tabelle>` zeigt die Historie, `SELECT … FOR SYSTEM_TIME AS OF …`
 liest einen früheren Stand (Time Travel).
 
-**Das Datenprodukt** (live verifiziert 09.07.2026):
+**Das Datenprodukt** (live verifiziert 14.07.2026, Stand nach dem
+Berlin/Hamburg-Fix):
 
 | Dimensionen | Fakten |
 |---|---|
@@ -728,7 +754,7 @@ Konsumenten greifen darauf über denselben Impala-Endpoint zu wie die Pipeline
 - **Englische Städtenamen** der Klimadaten (Munich→Muenchen …) gemappt,
   **Kompass-Koordinaten** („5.63S" → „-5,63") normalisiert, Filter auf
   `country = 'Germany'`.
-- **Stadtstaaten Berlin & Hamburg (5-stelliger Kreisschlüssel ergänzt):** Die
+- **Stadtstaaten Berlin & Hamburg (5-stelliger Kreisschlüssel ergänzt, P11):** Die
   Quelle führt Berlin und Hamburg **nur** mit ihrem 2-stelligen Landesschlüssel
   (`11` / `02`) — einen eigenen 5-stelligen Kreisschlüssel gibt es nicht, ihre
   Untereinheiten sind die 8-stelligen Bezirke. Stufe 3 filtert aber bewusst auf
@@ -818,14 +844,18 @@ legt neue DAGs standardmäßig **pausiert** an, und der Pause-Toggle ließ sich
 in der CDE-Airflow-UI nicht zuverlässig bedienen — der DAG setzt deshalb
 `is_paused_upon_creation=False` ([cde/pipeline_dag.py](cde/pipeline_dag.py)).
 
+**Neu (14.07.2026) — Stadtstaaten-Fix verifiziert (P11):** Berlin (`11`→`11000`)
+und Hamburg (`02`→`02000`) sind jetzt im Datenprodukt: `dim_kreis` 474 (16
+Bundesländer), erzwungener Stufe-3-Rebuild + Contract-Gate 32/32 OK — Details
+s. [Datenqualität](#datenqualität-was-bereinigt-wurde-kurzfassung).
+
 **Offene Arbeiten:**
 
-1. **End-to-End-Abnahmetest inkl. Stufe 3:** auf einem Rechner mit JDK 17 +
-   `ImpalaJDBC42.jar`: `run_pipeline.py` komplett (inkl. Spark-Stufe gegen die
-   jetzt Iceberg-basierten Audit-Tabellen; laut [docs/ADR.md](docs/ADR.md),
-   ADR-13, liest der JDBC-Pfad Iceberg wie Parquet, nach dem
-   Shadow-Swap-Umbau von `overwrite_table` aber erneut zu bestätigen).
-   Danach optional: `utils/reset_database.py` → `run_pipeline.py` → zweiter
+1. **Zwei-Läufe-Abnahmetest:** Stufe 3 selbst ist inzwischen bestätigt — der
+   erzwungene Rebuild beim Berlin/Hamburg-Fix (14.07.2026) lief inkl.
+   Contract-Gate 32/32 gegen die Iceberg-Audit-Tabellen, damit ist auch der
+   Spark-Pfad nach dem Shadow-Swap-Umbau von `overwrite_table` abgedeckt.
+   Noch offen: `utils/reset_database.py` → `run_pipeline.py` → zweiter
    Lauf muss überall „übersprungen" melden.
 2. **CDE-Abnahme nach [Checkliste](#cde-abnahme-checkliste-nach-dem-deploy):**
    die Stufen-Jobs einzeln laufen lassen (Skip-Meldungen prüfen), einmal
