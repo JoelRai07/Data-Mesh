@@ -336,16 +336,26 @@ def build_dim_klimastadt(spark):
 def build_dim_gemeinde(spark, dim_kreis):
     """Input: gruppe3_audit_gemeinden, dim_kreis. Output: DataFrame dim_gemeinde -
     Kreis-Zuordnung per Fuzzy-Match (kreis_name enthaelt district_kreis),
-    bei Mehrdeutigkeit gewinnt der laengste/spezifischste Kreisname."""
+    abgesichert ueber das Bundesland (sonst faengt z.B. Ulm/BW den laengeren
+    bayerischen Kreis 'Neu-Ulm' ein); bei Mehrdeutigkeit gewinnt der
+    laengste/spezifischste Kreisname. state_land kommt un-transliteriert aus
+    der Quelle und muss fuer den Vergleich erst nach ae/oe/ue uebersetzt werden."""
+    state_translit = F.col("state_land")
+    for umlaut, replacement in [("ä", "ae"), ("ö", "oe"), ("ü", "ue"),
+                                ("Ä", "Ae"), ("Ö", "Oe"), ("Ü", "Ue")]:
+        state_translit = F.regexp_replace(state_translit, umlaut, replacement)
+
     gem = (
         read_gemeinden(spark)
         .filter(F.col("area_km2").isNotNull())
         .withColumn("district_clean", F.trim(F.regexp_replace(F.col("district_kreis"), '"', "")))
+        .withColumn("state_translit", state_translit)
     )
 
     joined = gem.join(
         dim_kreis,
-        F.lower(dim_kreis.kreis_name).contains(F.lower(gem.district_clean)),
+        F.lower(dim_kreis.kreis_name).contains(F.lower(gem.district_clean))
+        & (F.lower(dim_kreis.bundesland_name) == F.lower(gem.state_translit)),
         "left",
     )
 
