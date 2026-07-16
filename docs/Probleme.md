@@ -314,8 +314,6 @@ Diese Punkte sind **keine Bugs**, sondern Eigenschaften der Quelldaten — im
 
 ## Offene Punkte
 
-- **Präsentation erstellen** (Prüfungsleistung; Argumentationshilfen: README
-  „Prüfungswissen kompakt" + [ADR.md](ADR.md)).
 - **`dim_kreis.kreis_name` mehrdeutig:** optionale Zusatz-Spalte `kreis_typ`
   oder Originalname, um Stadt/Landkreis wieder unterscheidbar zu machen; bis
   dahin gilt die Contract-Regel „Joins nur über `kreis_id`".
